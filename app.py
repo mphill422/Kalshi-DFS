@@ -837,28 +837,33 @@ with tab1:
                     if total:
                         vegas_str += f" · O/U {total}"
 
-                reasons_html = ""
-                for r in p["cash_reasons"]:
-                    reasons_html += f'<div class="preason">• {r}</div>'
+                reasons_list = p.get("cash_reasons", [])
+                reasons_html = "".join(f"<div class='preason'>• {r}</div>" for r in reasons_list)
+                badges_html = player_badges(p)
+                name_safe = p["name"]
+                pos_safe = p["position"]
+                team_safe = p["team"]
+                opp_safe = p["opponent"]
+                score_val = int(p["cash_score"])
 
-                st.markdown(f"""
-                <div class="pick-cash">
-                  <div style="display:flex; justify-content:space-between; align-items:flex-start">
-                    <div>
-                      <div class="pname">{p['name']}</div>
-                      <div class="pmeta">{p['position']} · {p['team']} vs {p['opponent']} · Proj: {proj:.1f}</div>
-                      <div class="pmeta">{vegas_str}</div>
-                      <div style="margin-top:4px">{player_badges(p)}</div>
-                      {reasons_html}
-                    </div>
-                    <div style="text-align:center; min-width:44px">
-                      <div style="background:#0a2540; border-radius:50%; width:40px; height:40px; display:flex; align-items:center; justify-content:center; font-family:'Barlow Condensed',sans-serif; font-size:1rem; font-weight:700; color:#4fc3f7">{p['cash_score']:.0f}</div>
-                      <div style="font-size:0.6rem; color:#8892a4; margin-top:2px">CASH</div>
-                    </div>
-                  </div>
-                  <div style="font-size:0.68rem; color:#4fc3f7; margin-top:5px">{rank}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                card_html = (
+                    f"<div class='pick-cash'>"
+                    f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
+                    f"<div>"
+                    f"<div class='pname'>{name_safe}</div>"
+                    f"<div class='pmeta'>{pos_safe} &middot; {team_safe} vs {opp_safe} &middot; Proj: {proj:.1f}</div>"
+                    f"<div class='pmeta'>{vegas_str}</div>"
+                    f"<div style='margin-top:4px'>{badges_html}</div>"
+                    f"{reasons_html}"
+                    f"</div>"
+                    f"<div style='text-align:center;min-width:44px'>"
+                    f"<div style='background:#0a2540;border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;font-family:Barlow Condensed,sans-serif;font-size:1rem;font-weight:700;color:#4fc3f7'>{score_val}</div>"
+                    f"<div style='font-size:0.6rem;color:#8892a4;margin-top:2px'>CASH</div>"
+                    f"</div></div>"
+                    f"<div style='font-size:0.68rem;color:#4fc3f7;margin-top:5px'>{rank}</div>"
+                    f"</div>"
+                )
+                st.markdown(card_html, unsafe_allow_html=True)
 
         # ── GPP picks ─────────────────────────────────────────────────────────
         with col_gpp:
@@ -874,28 +879,33 @@ with tab1:
                     if total:
                         vegas_str += f" · O/U {total}"
 
-                reasons_html = ""
-                for r in p["gpp_reasons"]:
-                    reasons_html += f'<div class="preason">• {r}</div>'
+                reasons_list = p.get("gpp_reasons", [])
+                reasons_html = "".join(f"<div class='preason'>• {r}</div>" for r in reasons_list)
+                badges_html = player_badges(p)
+                name_safe = p["name"]
+                pos_safe = p["position"]
+                team_safe = p["team"]
+                opp_safe = p["opponent"]
+                score_val = int(p["gpp_score"])
 
-                st.markdown(f"""
-                <div class="pick-gpp">
-                  <div style="display:flex; justify-content:space-between; align-items:flex-start">
-                    <div>
-                      <div class="pname">{p['name']}</div>
-                      <div class="pmeta">{p['position']} · {p['team']} vs {p['opponent']} · Proj: {proj:.1f}</div>
-                      <div class="pmeta">{vegas_str}</div>
-                      <div style="margin-top:4px">{player_badges(p)}</div>
-                      {reasons_html}
-                    </div>
-                    <div style="text-align:center; min-width:44px">
-                      <div style="background:#2d1040; border-radius:50%; width:40px; height:40px; display:flex; align-items:center; justify-content:center; font-family:'Barlow Condensed',sans-serif; font-size:1rem; font-weight:700; color:#ce93d8">{p['gpp_score']:.0f}</div>
-                      <div style="font-size:0.6rem; color:#8892a4; margin-top:2px">GPP</div>
-                    </div>
-                  </div>
-                  <div style="font-size:0.68rem; color:#ce93d8; margin-top:5px">{rank}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                gpp_card = (
+                    f"<div class='pick-gpp'>"
+                    f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
+                    f"<div>"
+                    f"<div class='pname'>{name_safe}</div>"
+                    f"<div class='pmeta'>{pos_safe} &middot; {team_safe} vs {opp_safe} &middot; Proj: {proj:.1f}</div>"
+                    f"<div class='pmeta'>{vegas_str}</div>"
+                    f"<div style='margin-top:4px'>{badges_html}</div>"
+                    f"{reasons_html}"
+                    f"</div>"
+                    f"<div style='text-align:center;min-width:44px'>"
+                    f"<div style='background:#2d1040;border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;font-family:Barlow Condensed,sans-serif;font-size:1rem;font-weight:700;color:#ce93d8'>{score_val}</div>"
+                    f"<div style='font-size:0.6rem;color:#8892a4;margin-top:2px'>GPP</div>"
+                    f"</div></div>"
+                    f"<div style='font-size:0.68rem;color:#ce93d8;margin-top:5px'>{rank}</div>"
+                    f"</div>"
+                )
+                st.markdown(gpp_card, unsafe_allow_html=True)
 
         # Show all players in expander
         if show_all and len(tier_players) > 2:
