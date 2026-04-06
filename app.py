@@ -524,6 +524,67 @@ def get_demo_slate():
         {"name": "Bol Bol", "team": "PHX", "position": "C", "tier": 6, "dk_projection": 15.9, "status": "", "opponent": "DAL"},
     ]
 
+
+def parse_dk_csv(uploaded_file):
+    """
+    Parse a DraftKings tier contest CSV export into player list.
+    DK CSV columns: Position, Name + ID, Name, ID, Roster Position,
+    Salary, Game Info, TeamAbbrev, AvgPointsPerGame
+    For tier contests, Position field is T1-T6.
+    """
+    try:
+        df = pd.read_csv(uploaded_file)
+        players = []
+
+        for _, row in df.iterrows():
+            position = str(row.get("Position", "") or row.get("Roster Position", "")).strip()
+
+            # Tier contests: position is T1, T2, T3, T4, T5, T6
+            tier = None
+            if position.startswith("T") and len(position) == 2:
+                try:
+                    tier = int(position[1])
+                except:
+                    pass
+
+            if tier is None:
+                continue
+
+            name = str(row.get("Name", "") or "").strip()
+            if not name:
+                # Try Name + ID column
+                name_id = str(row.get("Name + ID", "") or "")
+                name = name_id.split("(")[0].strip() if "(" in name_id else name_id.strip()
+
+            team = str(row.get("TeamAbbrev", "") or "").strip()
+            avg_pts = float(row.get("AvgPointsPerGame", 0) or 0)
+            game_info = str(row.get("Game Info", "") or "")
+
+            # Parse opponent from game info (e.g. "NYK@ATL 07:30PM ET")
+            opponent = ""
+            if "@" in game_info:
+                teams_part = game_info.split(" ")[0]
+                parts = teams_part.split("@")
+                if len(parts) == 2:
+                    away_team = parts[0].strip()
+                    home_team = parts[1].strip()
+                    opponent = home_team if team == away_team else away_team
+
+            players.append({
+                "name": name,
+                "team": team,
+                "position": position,
+                "tier": tier,
+                "dk_projection": avg_pts,
+                "status": "",
+                "opponent": opponent,
+            })
+
+        return players
+    except Exception as e:
+        st.error(f"CSV parse error: {e}")
+        return []
+
 # ── Save to Supabase ───────────────────────────────────────────────────────────
 
 def save_lineup(picks, contest_date):
@@ -572,7 +633,7 @@ st.markdown(f"""
 # Sidebar
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
-    use_demo = st.toggle("Use Demo Slate", value=True, help="Toggle off to fetch live DK data")
+    slate_mode = st.radio("Slate Source", ["📂 Upload DK CSV", "🔶 Demo Slate"], index=0)
     auto_refresh = st.toggle("Auto-Refresh (5 min)", value=False)
     st.markdown("---")
     st.markdown("### 🔑 API Status")
@@ -583,7 +644,6 @@ with st.sidebar:
 
     st.markdown(f"**Supabase:** {sb_status}")
     st.markdown(f"**Odds API:** {odds_status}")
-    st.markdown(f"**DK API:** {'✅ Live' if not use_demo else '🔶 Demo mode'}")
     st.markdown("---")
     st.markdown("### 📋 Scoring Weights")
     proj_weight = st.slider("Projection Weight", 0.5, 2.0, 1.2, 0.1)
@@ -594,20 +654,37 @@ with st.sidebar:
 tab1, tab2, tab3 = st.tabs(["🏀 Today's Slate", "📋 My Lineup", "📊 History"])
 
 with tab1:
-    # Load data
-    with st.spinner("Loading slate..."):
-        if use_demo:
-            players = get_demo_slate()
-            st.info("📌 Demo mode — using sample slate. Toggle 'Use Demo Slate' off in sidebar for live data.")
-        else:
-            players, dg_id, method = fetch_dk_nba_slate()
-            if players:
-                st.success(f"✅ Live DK slate loaded — {len(players)} players found (Draft Group: {dg_id})")
-            else:
-                st.warning("⚠️ Could not load live tier slate from DraftKings. Showing demo data.")
-                st.caption("Debug: If this persists, DK may not have a tier contest today, or the API mapping needs updating. Try toggling Demo Slate off/on to retry.")
-                players = get_demo_slate()
+    # CSV Upload mode
+    players = []
+    if slate_mode == "📂 Upload DK CSV":
+        st.markdown("""
+        <div style="background:#1e2535; border:1px solid #f5a623; border-radius:8px; padding:0.8rem 1rem; margin-bottom:1rem">
+        <b style="color:#f5a623">📂 How to get your DK CSV:</b><br>
+        <span style="color:#8892a4; font-size:0.85rem">
+        1. Open DraftKings → NBA → Tiers → click any contest → <b>Draft Team</b><br>
+        2. Scroll to bottom → click <b>Export to CSV</b><br>
+        3. Upload that file below ⬇️
+        </span>
+        </div>
+        """, unsafe_allow_html=True)
 
+        uploaded_file = st.file_uploader("Upload DK Tier CSV", type=["csv"], label_visibility="collapsed")
+
+        if uploaded_file:
+            players = parse_dk_csv(uploaded_file)
+            if players:
+                st.success(f"✅ Loaded {len(players)} players from DK CSV across {len(set(p['tier'] for p in players))} tiers")
+            else:
+                st.error("❌ Could not parse CSV. Make sure it's a DraftKings tier contest export.")
+                players = get_demo_slate()
+        else:
+            st.info("👆 Upload your DK CSV to load tonight's real slate.")
+            players = get_demo_slate()
+    else:
+        players = get_demo_slate()
+        st.info("📌 Demo mode — showing sample slate.")
+
+    with st.spinner("Scoring players..."):
         vegas_lines = fetch_vegas_lines()
         injuries = fetch_injury_report()
 
