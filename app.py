@@ -104,6 +104,19 @@ div[data-testid="stSidebar"] { background: #0f1420 !important; border-right: 1px
     font-family: 'Barlow Condensed', sans-serif !important; font-weight: 700 !important;
     font-size: 0.95rem !important; text-transform: uppercase !important;
     letter-spacing: 0.06em !important; border: none !important; border-radius: 6px !important; }
+
+/* Mobile optimizations */
+@media (max-width: 768px) {
+    .main-header h1 { font-size: 1.6rem !important; }
+    .pname { font-size: 1rem !important; }
+    .pmeta { font-size: 0.8rem !important; }
+    .preason { font-size: 0.78rem !important; }
+    .pick-cash, .pick-gpp { padding: 0.8rem !important; margin-bottom: 0.6rem !important; }
+    .metric-val { font-size: 1.5rem !important; }
+    .tier-header { font-size: 1.2rem !important; }
+    .label-cash, .label-gpp { font-size: 0.72rem !important; margin-bottom: 4px; display: block; }
+    .badge { font-size: 0.7rem !important; padding: 3px 8px !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -803,113 +816,79 @@ with tab1:
             """, unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Tier Panels ───────────────────────────────────────────────────────────
+    # ── Tier Panels — Mobile First ────────────────────────────────────────────
     if "picks_cash" not in st.session_state:
         st.session_state.picks_cash = {}
     if "picks_gpp" not in st.session_state:
         st.session_state.picks_gpp = {}
+
+    def make_card(p, mode="cash"):
+        proj = p["dk_projection"]
+        spread = p.get("vegas_spread")
+        total = p.get("vegas_total")
+        vegas_str = ""
+        if spread is not None:
+            vegas_str = f"Spread {spread:+.1f}"
+            if total:
+                vegas_str += f" · O/U {total}"
+        score_key = "cash_score" if mode == "cash" else "gpp_score"
+        reasons_key = "cash_reasons" if mode == "cash" else "gpp_reasons"
+        score_val = int(p.get(score_key, 0))
+        reasons = p.get(reasons_key, [])
+        reasons_html = "".join(f"<div class='preason'>• {r}</div>" for r in reasons)
+        badges_html = player_badges(p)
+        css_class = "pick-cash" if mode == "cash" else "pick-gpp"
+        score_bg = "#0a2540" if mode == "cash" else "#2d1040"
+        score_color = "#4fc3f7" if mode == "cash" else "#ce93d8"
+        return (
+            f"<div class='{css_class}'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
+            f"<div style='flex:1'>"
+            f"<div class='pname'>{p['name']}</div>"
+            f"<div class='pmeta'>{p['position']} · {p['team']} vs {p['opponent']} · Proj: {proj:.1f}</div>"
+            f"<div class='pmeta'>{vegas_str}</div>"
+            f"<div style='margin-top:5px'>{badges_html}</div>"
+            f"{reasons_html}"
+            f"</div>"
+            f"<div style='text-align:center;min-width:48px;margin-left:8px'>"
+            f"<div style='background:{score_bg};border-radius:50%;width:44px;height:44px;display:flex;align-items:center;justify-content:center;font-family:Barlow Condensed,sans-serif;font-size:1.1rem;font-weight:700;color:{score_color}'>{score_val}</div>"
+            f"<div style='font-size:0.6rem;color:#8892a4;margin-top:2px'>{mode.upper()}</div>"
+            f"</div></div>"
+            f"</div>"
+        )
 
     for tier_num in range(1, 7):
         tier_players = [p for p in players if p["tier"] == tier_num]
         if not tier_players:
             continue
 
-        # Sort for cash (floor) and GPP (ceiling) separately
         cash_sorted = sorted(tier_players, key=lambda x: x["cash_score"], reverse=True)
         gpp_sorted  = sorted(tier_players, key=lambda x: x["gpp_score"],  reverse=True)
 
         tc = TIER_CLASSES[tier_num]
-        st.markdown(f'<div class="tier-header {tc}">{TIER_LABELS[tier_num]}</div>', unsafe_allow_html=True)
 
-        col_cash, col_gpp = st.columns(2)
+        # Collapsible tier using expander — mobile friendly
+        with st.expander(f"{TIER_LABELS[tier_num]}", expanded=True):
 
-        # ── Cash picks ────────────────────────────────────────────────────────
-        with col_cash:
-            st.markdown(f'<div class="label-cash">💵 Triple Up / Cash</div>', unsafe_allow_html=True)
-            for idx, p in enumerate(cash_sorted[:2]):
-                rank = "🥇 TOP CASH PICK" if idx == 0 else "2nd CASH OPTION"
-                proj = p["dk_projection"]
-                spread = p.get("vegas_spread")
-                total  = p.get("vegas_total")
-                vegas_str = ""
-                if spread is not None:
-                    vegas_str = f"Spread {spread:+.1f}"
-                    if total:
-                        vegas_str += f" · O/U {total}"
+            # Cash section
+            st.markdown("<div class='label-cash'>💵 TRIPLE UP / CASH</div>", unsafe_allow_html=True)
+            st.markdown(make_card(cash_sorted[0], "cash"), unsafe_allow_html=True)
+            if len(cash_sorted) > 1:
+                st.markdown(make_card(cash_sorted[1], "cash"), unsafe_allow_html=True)
 
-                reasons_list = p.get("cash_reasons", [])
-                reasons_html = "".join(f"<div class='preason'>• {r}</div>" for r in reasons_list)
-                badges_html = player_badges(p)
-                name_safe = p["name"]
-                pos_safe = p["position"]
-                team_safe = p["team"]
-                opp_safe = p["opponent"]
-                score_val = int(p["cash_score"])
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-                card_html = (
-                    f"<div class='pick-cash'>"
-                    f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
-                    f"<div>"
-                    f"<div class='pname'>{name_safe}</div>"
-                    f"<div class='pmeta'>{pos_safe} &middot; {team_safe} vs {opp_safe} &middot; Proj: {proj:.1f}</div>"
-                    f"<div class='pmeta'>{vegas_str}</div>"
-                    f"<div style='margin-top:4px'>{badges_html}</div>"
-                    f"{reasons_html}"
-                    f"</div>"
-                    f"<div style='text-align:center;min-width:44px'>"
-                    f"<div style='background:#0a2540;border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;font-family:Barlow Condensed,sans-serif;font-size:1rem;font-weight:700;color:#4fc3f7'>{score_val}</div>"
-                    f"<div style='font-size:0.6rem;color:#8892a4;margin-top:2px'>CASH</div>"
-                    f"</div></div>"
-                    f"<div style='font-size:0.68rem;color:#4fc3f7;margin-top:5px'>{rank}</div>"
-                    f"</div>"
-                )
-                st.markdown(card_html, unsafe_allow_html=True)
+            # GPP section
+            st.markdown("<div class='label-gpp'>🏆 GPP / TOURNAMENT</div>", unsafe_allow_html=True)
+            st.markdown(make_card(gpp_sorted[0], "gpp"), unsafe_allow_html=True)
+            if len(gpp_sorted) > 1:
+                # Only show GPP 2nd if different from cash top pick
+                gpp_2nd = gpp_sorted[1] if gpp_sorted[1]["name"] != gpp_sorted[0]["name"] else (gpp_sorted[2] if len(gpp_sorted) > 2 else None)
+                if gpp_2nd:
+                    st.markdown(make_card(gpp_2nd, "gpp"), unsafe_allow_html=True)
 
-        # ── GPP picks ─────────────────────────────────────────────────────────
-        with col_gpp:
-            st.markdown(f'<div class="label-gpp">🏆 GPP / Tournament</div>', unsafe_allow_html=True)
-            for idx, p in enumerate(gpp_sorted[:2]):
-                rank = "🥇 TOP GPP PICK" if idx == 0 else "2nd GPP OPTION"
-                proj = p["dk_projection"]
-                spread = p.get("vegas_spread")
-                total  = p.get("vegas_total")
-                vegas_str = ""
-                if spread is not None:
-                    vegas_str = f"Spread {spread:+.1f}"
-                    if total:
-                        vegas_str += f" · O/U {total}"
-
-                reasons_list = p.get("gpp_reasons", [])
-                reasons_html = "".join(f"<div class='preason'>• {r}</div>" for r in reasons_list)
-                badges_html = player_badges(p)
-                name_safe = p["name"]
-                pos_safe = p["position"]
-                team_safe = p["team"]
-                opp_safe = p["opponent"]
-                score_val = int(p["gpp_score"])
-
-                gpp_card = (
-                    f"<div class='pick-gpp'>"
-                    f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
-                    f"<div>"
-                    f"<div class='pname'>{name_safe}</div>"
-                    f"<div class='pmeta'>{pos_safe} &middot; {team_safe} vs {opp_safe} &middot; Proj: {proj:.1f}</div>"
-                    f"<div class='pmeta'>{vegas_str}</div>"
-                    f"<div style='margin-top:4px'>{badges_html}</div>"
-                    f"{reasons_html}"
-                    f"</div>"
-                    f"<div style='text-align:center;min-width:44px'>"
-                    f"<div style='background:#2d1040;border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;font-family:Barlow Condensed,sans-serif;font-size:1rem;font-weight:700;color:#ce93d8'>{score_val}</div>"
-                    f"<div style='font-size:0.6rem;color:#8892a4;margin-top:2px'>GPP</div>"
-                    f"</div></div>"
-                    f"<div style='font-size:0.68rem;color:#ce93d8;margin-top:5px'>{rank}</div>"
-                    f"</div>"
-                )
-                st.markdown(gpp_card, unsafe_allow_html=True)
-
-        # Show all players in expander
-        if show_all and len(tier_players) > 2:
-            with st.expander(f"All {len(tier_players)} Tier {tier_num} players"):
+            # Show all table
+            if show_all:
                 rows = []
                 for p in cash_sorted:
                     rows.append({
@@ -917,16 +896,13 @@ with tab1:
                         "Team": p["team"],
                         "vs": p["opponent"],
                         "Proj": p["dk_projection"],
-                        "Cash Score": p["cash_score"],
-                        "GPP Score": p["gpp_score"],
+                        "Cash": p["cash_score"],
+                        "GPP": p["gpp_score"],
                         "Spread": p.get("vegas_spread", ""),
                         "O/U": p.get("vegas_total", ""),
-                        "Injury": p.get("inj_status", ""),
-                        "L10": p.get("recent_form", "")
+                        "Inj": p.get("inj_status", ""),
                     })
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
 
 # ── My Lineup Tab ─────────────────────────────────────────────────────────────
 with tab2:
