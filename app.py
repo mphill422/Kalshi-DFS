@@ -191,60 +191,177 @@ div[data-testid="stSidebar"] {
 # ── Data Fetchers ─────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
-def fetch_dk_nba_slate():
+def fetch_dk_tier_contest_id():
     """
-    Fetch DraftKings NBA tier contest slate.
-    Uses DK's unofficial draftgroups endpoint.
-    Returns list of players with tier assignments.
+    Find today's NBA Tier contest draft group ID from DK contests endpoint.
+    Searches for NBA Tiers contests starting today.
     """
     try:
-        # DK draftgroups endpoint for NBA
-        url = "https://api.draftkings.com/lineups/v1/draftgroups?sport=NBA&contestTypeId=96&includeSecondaryDraftablePlayers=false"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        # Step 1: Get all NBA draftgroups (no contestTypeId filter — get all)
+        url = "https://api.draftkings.com/lineups/v1/draftgroups?sport=NBA&includeSecondaryDraftablePlayers=false"
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        draft_groups = data.get("draftGroups", [])
+        today = date.today().isoformat()
+
+        # Step 2: Find tier contest — look for "Tiers" in contest type name or game type
+        tier_ids = []
+        for dg in draft_groups:
+            start = dg.get("startDateEst", "")
+            game_type = dg.get("gameType", "").lower()
+            contest_type = dg.get("contestType", {}).get("name", "").lower()
+            dg_id = dg.get("draftGroupId")
+
+            if today not in start:
+                continue
+
+            # Tier contests have "tier" in game type or contest type name
+            if "tier" in game_type or "tier" in contest_type:
+                tier_ids.append(dg_id)
+
+        return tier_ids[0] if tier_ids else None
+
+    except Exception as e:
+        return None
+
+@st.cache_data(ttl=300)
+def fetch_dk_contests_for_tiers():
+    """
+    Alternative approach: search DK contests directly for NBA Tiers.
+    Returns draft group ID of the main NBA tiers contest.
+    """
+    try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json"
+            "Accept": "application/json",
         }
-        resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            draft_groups = data.get("draftGroups", [])
-            # Filter to today's NBA slate
-            today = date.today().isoformat()
-            todays = [dg for dg in draft_groups if today in dg.get("startDateEst", "")]
-            return todays
-        return []
-    except Exception as e:
-        return []
+        # DK contests lobby endpoint
+        url = "https://api.draftkings.com/contests/v1/contests?sport=NBA"
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        contests = data.get("contests", [])
+        today = date.today().isoformat()
+
+        for contest in contests:
+            name = contest.get("n", "").lower()
+            start = contest.get("sd", "")
+            if "tier" in name and today in start:
+                return contest.get("draftGroupId")
+
+        return None
+    except:
+        return None
 
 @st.cache_data(ttl=300)
 def fetch_dk_tier_players(draft_group_id):
     """Fetch players and tier assignments for a given DK draft group."""
     try:
         url = f"https://api.draftkings.com/lineups/v1/draftgroups/{draft_group_id}/draftables"
-        headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-        resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            players = []
-            for p in data.get("draftables", []):
-                roster_slot = p.get("rosterSlotId", 0)
-                # Tier contests: rosterSlotId 150-155 = Tiers 1-6
-                tier = roster_slot - 149 if 150 <= roster_slot <= 155 else None
-                if tier:
-                    players.append({
-                        "player_id": p.get("playerId"),
-                        "name": p.get("displayName", ""),
-                        "team": p.get("teamAbbreviation", ""),
-                        "position": p.get("position", ""),
-                        "tier": tier,
-                        "dk_projection": p.get("draftStatAttributes", [{}])[0].get("value", 0) if p.get("draftStatAttributes") else 0,
-                        "status": p.get("playerGameAttribute", {}).get("label", ""),
-                        "opponent": p.get("competition", {}).get("awayTeam", {}).get("abbreviation", "") if p.get("competition") else ""
-                    })
-            return players
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+        }
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return []
+
+        data = resp.json()
+        players = []
+
+        for p in data.get("draftables", []):
+            roster_slot = p.get("rosterSlotId", 0)
+
+            # Tier mapping — DK uses different rosterSlotIds for tiers
+            # Common mappings: try multiple known ranges
+            tier = None
+            # Known tier rosterSlotId ranges (may vary by season)
+            tier_map = {
+                150: 1, 151: 2, 152: 3, 153: 4, 154: 5, 155: 6,  # original guess
+                161: 1, 162: 2, 163: 3, 164: 4, 165: 5, 166: 6,  # alternate
+                170: 1, 171: 2, 172: 3, 173: 4, 174: 5, 175: 6,  # alternate 2
+            }
+            tier = tier_map.get(roster_slot)
+
+            # Also try position-based tier detection
+            position = p.get("position", "")
+            if tier is None and position.startswith("T"):
+                try:
+                    tier = int(position[1])
+                except:
+                    pass
+
+            if tier is None:
+                continue
+
+            # Get projection from draftStatAttributes
+            proj = 0
+            for attr in p.get("draftStatAttributes", []):
+                if attr.get("id") in [110, 111, 112]:  # FPPG attribute IDs
+                    try:
+                        proj = float(attr.get("value", 0))
+                    except:
+                        pass
+                    break
+            if proj == 0:
+                try:
+                    proj = float(p.get("draftStatAttributes", [{}])[0].get("value", 0) or 0)
+                except:
+                    proj = 0
+
+            # Get opponent
+            comp = p.get("competition", {})
+            home = comp.get("homeTeam", {}).get("abbreviation", "")
+            away = comp.get("awayTeam", {}).get("abbreviation", "")
+            team = p.get("teamAbbreviation", "")
+            opponent = away if team == home else home
+
+            players.append({
+                "player_id": p.get("playerId"),
+                "name": p.get("displayName", ""),
+                "team": team,
+                "position": p.get("playerPosition", position),
+                "tier": tier,
+                "dk_projection": proj,
+                "status": p.get("playerGameAttribute", {}).get("label", ""),
+                "opponent": opponent,
+                "roster_slot_id": roster_slot  # keep for debugging
+            })
+
+        return players
+
     except Exception as e:
-        pass
-    return []
+        return []
+
+@st.cache_data(ttl=300)
+def fetch_dk_nba_slate():
+    """
+    Main slate fetcher — tries multiple DK endpoints to find tier contest.
+    Returns (players list, draft_group_id or None, method used)
+    """
+    # Method 1: search draftgroups for tier game type
+    dg_id = fetch_dk_tier_contest_id()
+
+    # Method 2: search contests lobby
+    if not dg_id:
+        dg_id = fetch_dk_contests_for_tiers()
+
+    if dg_id:
+        players = fetch_dk_tier_players(dg_id)
+        if players:
+            return players, dg_id, "live"
+
+    return [], None, "failed"
 
 @st.cache_data(ttl=600)
 def fetch_nba_player_stats(player_name):
@@ -530,15 +647,12 @@ with tab1:
             players = get_demo_slate()
             st.info("📌 Demo mode — using sample slate. Toggle 'Use Demo Slate' off in sidebar for live data.")
         else:
-            slates = fetch_dk_nba_slate()
-            if slates:
-                dg_id = slates[0].get("draftGroupId")
-                players = fetch_dk_tier_players(dg_id)
-                if not players:
-                    st.warning("Could not load tier players from DK. Falling back to demo.")
-                    players = get_demo_slate()
+            players, dg_id, method = fetch_dk_nba_slate()
+            if players:
+                st.success(f"✅ Live DK slate loaded — {len(players)} players found (Draft Group: {dg_id})")
             else:
-                st.warning("No NBA tier slate found on DraftKings today. Showing demo.")
+                st.warning("⚠️ Could not load live tier slate from DraftKings. Showing demo data.")
+                st.caption("Debug: If this persists, DK may not have a tier contest today, or the API mapping needs updating. Try toggling Demo Slate off/on to retry.")
                 players = get_demo_slate()
 
         vegas_lines = fetch_vegas_lines()
