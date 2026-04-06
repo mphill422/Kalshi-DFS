@@ -537,13 +537,14 @@ def parse_dk_csv(uploaded_file):
         players = []
 
         for _, row in df.iterrows():
-            position = str(row.get("Position", "") or row.get("Roster Position", "")).strip()
+            # Tier is in "Roster Position" column (T1-T6)
+            roster_pos = str(row.get("Roster Position", "") or "").strip()
+            position = str(row.get("Position", "") or "").strip()
 
-            # Tier contests: position is T1, T2, T3, T4, T5, T6
             tier = None
-            if position.startswith("T") and len(position) == 2:
+            if roster_pos.startswith("T") and len(roster_pos) == 2:
                 try:
-                    tier = int(position[1])
+                    tier = int(roster_pos[1])
                 except:
                     pass
 
