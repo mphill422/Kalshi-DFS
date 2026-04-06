@@ -193,8 +193,8 @@ div[data-testid="stSidebar"] {
 @st.cache_data(ttl=300)
 def fetch_dk_tier_contest_id():
     """
-    Find today's NBA Tier contest draft group ID from DK contests endpoint.
-    Searches for NBA Tiers contests starting today.
+    Find today NBA Tier draft group ID using confirmed contestTypeId=73.
+    rosterSlotId 415-420 = Tiers 1-6 (confirmed via DevTools inspection).
     """
     try:
         headers = {
@@ -202,8 +202,8 @@ def fetch_dk_tier_contest_id():
             "Accept": "application/json",
             "Accept-Language": "en-US,en;q=0.9",
         }
-        # Step 1: Get all NBA draftgroups (no contestTypeId filter — get all)
-        url = "https://api.draftkings.com/lineups/v1/draftgroups?sport=NBA&includeSecondaryDraftablePlayers=false"
+        # contestTypeId=73 confirmed as NBA Tiers via Chrome DevTools
+        url = "https://api.draftkings.com/lineups/v1/draftgroups?sport=NBA&contestTypeId=73&includeSecondaryDraftablePlayers=false"
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code != 200:
             return None
@@ -212,55 +212,20 @@ def fetch_dk_tier_contest_id():
         draft_groups = data.get("draftGroups", [])
         today = date.today().isoformat()
 
-        # Step 2: Find tier contest — look for "Tiers" in contest type name or game type
-        tier_ids = []
         for dg in draft_groups:
             start = dg.get("startDateEst", "")
-            game_type = dg.get("gameType", "").lower()
-            contest_type = dg.get("contestType", {}).get("name", "").lower()
-            dg_id = dg.get("draftGroupId")
+            state = dg.get("draftGroupState", "")
+            suffix = dg.get("startTimeSuffix", "")
+            if today in start and state != "Closed":
+                return dg.get("draftGroupId")
 
-            if today not in start:
-                continue
+        # Fallback: return any result
+        if draft_groups:
+            return draft_groups[0].get("draftGroupId")
 
-            # Tier contests have "tier" in game type or contest type name
-            if "tier" in game_type or "tier" in contest_type:
-                tier_ids.append(dg_id)
-
-        return tier_ids[0] if tier_ids else None
+        return None
 
     except Exception as e:
-        return None
-
-@st.cache_data(ttl=300)
-def fetch_dk_contests_for_tiers():
-    """
-    Alternative approach: search DK contests directly for NBA Tiers.
-    Returns draft group ID of the main NBA tiers contest.
-    """
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json",
-        }
-        # DK contests lobby endpoint
-        url = "https://api.draftkings.com/contests/v1/contests?sport=NBA"
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code != 200:
-            return None
-
-        data = resp.json()
-        contests = data.get("contests", [])
-        today = date.today().isoformat()
-
-        for contest in contests:
-            name = contest.get("n", "").lower()
-            start = contest.get("sd", "")
-            if "tier" in name and today in start:
-                return contest.get("draftGroupId")
-
-        return None
-    except:
         return None
 
 @st.cache_data(ttl=300)
@@ -282,19 +247,12 @@ def fetch_dk_tier_players(draft_group_id):
         for p in data.get("draftables", []):
             roster_slot = p.get("rosterSlotId", 0)
 
-            # Tier mapping — DK uses different rosterSlotIds for tiers
-            # Common mappings: try multiple known ranges
+            # Tier mapping confirmed via Chrome DevTools 2026-04-06
+            # rosterSlotId 415=T1, 416=T2, 417=T3, 418=T4, 419=T5, 420=T6
             tier = None
-            # Known tier rosterSlotId ranges (may vary by season)
-            tier_map = {
-                150: 1, 151: 2, 152: 3, 153: 4, 154: 5, 155: 6,  # original guess
-                161: 1, 162: 2, 163: 3, 164: 4, 165: 5, 166: 6,  # alternate
-                170: 1, 171: 2, 172: 3, 173: 4, 174: 5, 175: 6,  # alternate 2
-            }
-            tier = tier_map.get(roster_slot)
-
-            # Also try position-based tier detection
             position = p.get("position", "")
+            tier_map = {415: 1, 416: 2, 417: 3, 418: 4, 419: 5, 420: 6}
+            tier = tier_map.get(roster_slot)
             if tier is None and position.startswith("T"):
                 try:
                     tier = int(position[1])
@@ -349,12 +307,7 @@ def fetch_dk_nba_slate():
     Main slate fetcher — tries multiple DK endpoints to find tier contest.
     Returns (players list, draft_group_id or None, method used)
     """
-    # Method 1: search draftgroups for tier game type
     dg_id = fetch_dk_tier_contest_id()
-
-    # Method 2: search contests lobby
-    if not dg_id:
-        dg_id = fetch_dk_contests_for_tiers()
 
     if dg_id:
         players = fetch_dk_tier_players(dg_id)
