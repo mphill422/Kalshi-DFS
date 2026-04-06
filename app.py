@@ -1,15 +1,14 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import requests
-import json
 import time
 from supabase import create_client
-import os
+import pytz
 
 st.set_page_config(
-    page_title="DFS Tier Optimizer",
+    page_title="DK Tier Optimizer",
     page_icon="🏀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -27,7 +26,7 @@ def get_supabase():
 
 supabase = get_supabase()
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
+# ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600&display=swap');
@@ -37,509 +36,265 @@ html, body, [class*="css"] {
     background-color: #0d0f14;
     color: #e8eaf0;
 }
-h1, h2, h3 {
-    font-family: 'Barlow Condensed', sans-serif;
-    letter-spacing: 0.04em;
-}
+h1,h2,h3 { font-family: 'Barlow Condensed', sans-serif; letter-spacing: 0.04em; }
+
 .main-header {
     background: linear-gradient(135deg, #1a1e2e 0%, #0f1420 100%);
     border-bottom: 2px solid #f5a623;
-    padding: 1rem 1.5rem;
-    margin-bottom: 1.5rem;
-    border-radius: 8px;
+    padding: 1rem 1.5rem; margin-bottom: 1rem; border-radius: 8px;
 }
-.main-header h1 {
-    font-size: 2.2rem;
-    font-weight: 800;
-    color: #f5a623;
-    margin: 0;
-    text-transform: uppercase;
-}
-.main-header .subtitle {
-    font-size: 0.9rem;
-    color: #8892a4;
-    margin-top: 2px;
-}
-.tier-card {
-    background: #161b27;
-    border: 1px solid #252d3d;
-    border-radius: 10px;
-    padding: 1rem;
-    margin-bottom: 1rem;
-}
-.tier-label {
-    font-family: 'Barlow Condensed', sans-serif;
-    font-size: 1.4rem;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: 0.6rem;
-}
-.t1 { color: #f5a623; border-left: 4px solid #f5a623; padding-left: 10px; }
-.t2 { color: #4fc3f7; border-left: 4px solid #4fc3f7; padding-left: 10px; }
-.t3 { color: #81c784; border-left: 4px solid #81c784; padding-left: 10px; }
-.t4 { color: #ce93d8; border-left: 4px solid #ce93d8; padding-left: 10px; }
-.t5 { color: #ffb74d; border-left: 4px solid #ffb74d; padding-left: 10px; }
-.t6 { color: #f48fb1; border-left: 4px solid #f48fb1; padding-left: 10px; }
-.player-row {
-    background: #1e2535;
-    border-radius: 6px;
-    padding: 0.6rem 0.8rem;
-    margin-bottom: 0.5rem;
-    border: 1px solid #2a3347;
-}
-.player-name {
-    font-family: 'Barlow Condensed', sans-serif;
-    font-size: 1.15rem;
-    font-weight: 700;
-    color: #ffffff;
-}
-.player-meta {
-    font-size: 0.78rem;
-    color: #8892a4;
-}
-.badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    margin-right: 4px;
-}
-.badge-green { background: #1b4332; color: #52b788; }
-.badge-red { background: #4a0e0e; color: #f87171; }
-.badge-yellow { background: #3d2c00; color: #f5a623; }
-.badge-blue { background: #0a2540; color: #4fc3f7; }
-.score-circle {
-    background: #252d3d;
-    border-radius: 50%;
-    width: 42px;
-    height: 42px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-family: 'Barlow Condensed', sans-serif;
-    font-size: 1.1rem;
-    font-weight: 700;
-}
-.lineup-box {
-    background: #161b27;
-    border: 2px solid #f5a623;
-    border-radius: 10px;
-    padding: 1.2rem;
-}
-.lineup-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.5rem 0;
-    border-bottom: 1px solid #252d3d;
-}
-.metric-card {
-    background: #161b27;
-    border: 1px solid #252d3d;
-    border-radius: 8px;
-    padding: 0.8rem 1rem;
-    text-align: center;
-}
-.metric-value {
-    font-family: 'Barlow Condensed', sans-serif;
-    font-size: 1.8rem;
-    font-weight: 700;
-    color: #f5a623;
-}
-.metric-label {
-    font-size: 0.75rem;
-    color: #8892a4;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-.stButton > button {
-    background: #f5a623 !important;
-    color: #0d0f14 !important;
-    font-family: 'Barlow Condensed', sans-serif !important;
-    font-weight: 700 !important;
-    font-size: 1rem !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.06em !important;
-    border: none !important;
-    border-radius: 6px !important;
-    padding: 0.4rem 1.2rem !important;
-}
-.stSelectbox label, .stRadio label {
-    color: #8892a4 !important;
-    font-size: 0.82rem !important;
-}
-div[data-testid="stSidebar"] {
-    background: #0f1420 !important;
-    border-right: 1px solid #252d3d;
-}
-.status-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    margin-right: 6px;
-}
-.dot-green { background: #52b788; }
-.dot-red { background: #f87171; }
-.dot-yellow { background: #f5a623; }
+.main-header h1 { font-size: 2rem; font-weight: 800; color: #f5a623; margin: 0; text-transform: uppercase; }
+.main-header .subtitle { font-size: 0.85rem; color: #8892a4; margin-top: 2px; }
+
+.tier-header { font-family: 'Barlow Condensed', sans-serif; font-size: 1.4rem; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 0.08em; margin: 1rem 0 0.5rem 0; padding-left: 10px; }
+.t1 { color: #f5a623; border-left: 4px solid #f5a623; }
+.t2 { color: #4fc3f7; border-left: 4px solid #4fc3f7; }
+.t3 { color: #81c784; border-left: 4px solid #81c784; }
+.t4 { color: #ce93d8; border-left: 4px solid #ce93d8; }
+.t5 { color: #ffb74d; border-left: 4px solid #ffb74d; }
+.t6 { color: #f48fb1; border-left: 4px solid #f48fb1; }
+
+.pick-cash { background: #0a1a2a; border: 1px solid #1a3a5a; border-left: 3px solid #4fc3f7;
+    border-radius: 8px; padding: 0.7rem 0.9rem; margin-bottom: 0.4rem; }
+.pick-gpp  { background: #1a0a2a; border: 1px solid #3a1a5a; border-left: 3px solid #ce93d8;
+    border-radius: 8px; padding: 0.7rem 0.9rem; margin-bottom: 0.4rem; }
+.pick-swap { background: #2a1500; border: 1px solid #f5a623; border-left: 3px solid #f5a623;
+    border-radius: 8px; padding: 0.7rem 0.9rem; margin-bottom: 0.4rem; }
+
+.label-cash { font-size: 0.65rem; font-weight: 700; color: #4fc3f7; text-transform: uppercase; letter-spacing: 0.1em; }
+.label-gpp  { font-size: 0.65rem; font-weight: 700; color: #ce93d8; text-transform: uppercase; letter-spacing: 0.1em; }
+.label-swap { font-size: 0.65rem; font-weight: 700; color: #f5a623; text-transform: uppercase; letter-spacing: 0.1em; }
+
+.pname { font-family: 'Barlow Condensed', sans-serif; font-size: 1.05rem; font-weight: 700; color: #fff; }
+.pmeta { font-size: 0.75rem; color: #8892a4; margin-top: 1px; }
+.preason { font-size: 0.75rem; color: #b0bec5; margin-top: 3px; font-style: italic; }
+
+.badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 0.65rem;
+    font-weight: 700; text-transform: uppercase; margin-right: 3px; }
+.b-red    { background: #4a0e0e; color: #f87171; }
+.b-yellow { background: #3d2c00; color: #f5a623; }
+.b-green  { background: #1b4332; color: #52b788; }
+.b-blue   { background: #0a2540; color: #4fc3f7; }
+.b-purple { background: #2d1040; color: #ce93d8; }
+.b-gray   { background: #252d3d; color: #8892a4; }
+
+.metric-card { background: #161b27; border: 1px solid #252d3d; border-radius: 8px;
+    padding: 0.7rem 0.9rem; text-align: center; }
+.metric-val { font-family: 'Barlow Condensed', sans-serif; font-size: 1.7rem; font-weight: 700; color: #f5a623; }
+.metric-lbl { font-size: 0.68rem; color: #8892a4; text-transform: uppercase; letter-spacing: 0.05em; }
+
+.alert-lock { background: #2a1200; border: 1px solid #f5a623; border-radius: 8px;
+    padding: 0.6rem 1rem; margin-bottom: 0.8rem; }
+.alert-out  { background: #2a0a0a; border: 1px solid #f87171; border-radius: 8px;
+    padding: 0.5rem 0.8rem; margin-bottom: 0.4rem; color: #f87171; font-size: 0.85rem; }
+.alert-gtd  { background: #2a1f00; border: 1px solid #f5a623; border-radius: 8px;
+    padding: 0.5rem 0.8rem; margin-bottom: 0.4rem; color: #f5a623; font-size: 0.85rem; }
+
+.countdown { font-family: 'Barlow Condensed', sans-serif; font-size: 1.1rem; font-weight: 700; }
+.countdown-urgent { color: #f87171; }
+.countdown-warn   { color: #f5a623; }
+.countdown-ok     { color: #52b788; }
+
+.game-lock-bar { background: #161b27; border: 1px solid #252d3d; border-radius: 6px;
+    padding: 0.4rem 0.8rem; margin-bottom: 0.3rem; display: flex; justify-content: space-between; }
+
+div[data-testid="stSidebar"] { background: #0f1420 !important; border-right: 1px solid #252d3d; }
+.stButton > button { background: #f5a623 !important; color: #0d0f14 !important;
+    font-family: 'Barlow Condensed', sans-serif !important; font-weight: 700 !important;
+    font-size: 0.95rem !important; text-transform: uppercase !important;
+    letter-spacing: 0.06em !important; border: none !important; border-radius: 6px !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# ── Constants ─────────────────────────────────────────────────────────────────
+ET = pytz.timezone("America/New_York")
+
+TIER_LABELS = {
+    1: "Tier 1 — Elite",
+    2: "Tier 2 — Star",
+    3: "Tier 3 — Premium",
+    4: "Tier 4 — Mid",
+    5: "Tier 5 — Value",
+    6: "Tier 6 — Dart"
+}
+TIER_CLASSES = {1: "t1", 2: "t2", 3: "t3", 4: "t4", 5: "t5", 6: "t6"}
+
+# DK team abbrev → full name (for Vegas line matching)
+DK_TEAM_MAP = {
+    "ATL": "Atlanta Hawks", "BOS": "Boston Celtics", "BKN": "Brooklyn Nets",
+    "CHA": "Charlotte Hornets", "CHI": "Chicago Bulls", "CLE": "Cleveland Cavaliers",
+    "DAL": "Dallas Mavericks", "DEN": "Denver Nuggets", "DET": "Detroit Pistons",
+    "GSW": "Golden State Warriors", "HOU": "Houston Rockets", "IND": "Indiana Pacers",
+    "LAC": "LA Clippers", "LAL": "Los Angeles Lakers", "MEM": "Memphis Grizzlies",
+    "MIA": "Miami Heat", "MIL": "Milwaukee Bucks", "MIN": "Minnesota Timberwolves",
+    "NOP": "New Orleans Pelicans", "NYK": "New York Knicks", "OKC": "Oklahoma City Thunder",
+    "ORL": "Orlando Magic", "PHI": "Philadelphia 76ers", "PHX": "Phoenix Suns",
+    "POR": "Portland Trail Blazers", "SAC": "Sacramento Kings", "SAS": "San Antonio Spurs",
+    "TOR": "Toronto Raptors", "UTA": "Utah Jazz", "WAS": "Washington Wizards"
+}
+
 # ── Data Fetchers ─────────────────────────────────────────────────────────────
-
-@st.cache_data(ttl=300)
-def fetch_dk_tier_contest_id():
-    """
-    Find today NBA Tier draft group ID using confirmed contestTypeId=73.
-    rosterSlotId 415-420 = Tiers 1-6 (confirmed via DevTools inspection).
-    """
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        # contestTypeId=73 confirmed as NBA Tiers via Chrome DevTools
-        url = "https://api.draftkings.com/lineups/v1/draftgroups?sport=NBA&contestTypeId=73&includeSecondaryDraftablePlayers=false"
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code != 200:
-            return None
-
-        data = resp.json()
-        draft_groups = data.get("draftGroups", [])
-        today = date.today().isoformat()
-
-        for dg in draft_groups:
-            start = dg.get("startDateEst", "")
-            state = dg.get("draftGroupState", "")
-            suffix = dg.get("startTimeSuffix", "")
-            if today in start and state != "Closed":
-                return dg.get("draftGroupId")
-
-        # Fallback: return any result
-        if draft_groups:
-            return draft_groups[0].get("draftGroupId")
-
-        return None
-
-    except Exception as e:
-        return None
-
-@st.cache_data(ttl=300)
-def fetch_dk_tier_players(draft_group_id):
-    """Fetch players and tier assignments for a given DK draft group."""
-    try:
-        url = f"https://api.draftkings.com/lineups/v1/draftgroups/{draft_group_id}/draftables"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json",
-        }
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code != 200:
-            return []
-
-        data = resp.json()
-        players = []
-
-        for p in data.get("draftables", []):
-            roster_slot = p.get("rosterSlotId", 0)
-
-            # Tier mapping confirmed via Chrome DevTools 2026-04-06
-            # rosterSlotId 415=T1, 416=T2, 417=T3, 418=T4, 419=T5, 420=T6
-            tier = None
-            position = p.get("position", "")
-            tier_map = {415: 1, 416: 2, 417: 3, 418: 4, 419: 5, 420: 6}
-            tier = tier_map.get(roster_slot)
-            if tier is None and position.startswith("T"):
-                try:
-                    tier = int(position[1])
-                except:
-                    pass
-
-            if tier is None:
-                continue
-
-            # Get projection from draftStatAttributes
-            proj = 0
-            for attr in p.get("draftStatAttributes", []):
-                if attr.get("id") in [110, 111, 112]:  # FPPG attribute IDs
-                    try:
-                        proj = float(attr.get("value", 0))
-                    except:
-                        pass
-                    break
-            if proj == 0:
-                try:
-                    proj = float(p.get("draftStatAttributes", [{}])[0].get("value", 0) or 0)
-                except:
-                    proj = 0
-
-            # Get opponent
-            comp = p.get("competition", {})
-            home = comp.get("homeTeam", {}).get("abbreviation", "")
-            away = comp.get("awayTeam", {}).get("abbreviation", "")
-            team = p.get("teamAbbreviation", "")
-            opponent = away if team == home else home
-
-            players.append({
-                "player_id": p.get("playerId"),
-                "name": p.get("displayName", ""),
-                "team": team,
-                "position": p.get("playerPosition", position),
-                "tier": tier,
-                "dk_projection": proj,
-                "status": p.get("playerGameAttribute", {}).get("label", ""),
-                "opponent": opponent,
-                "roster_slot_id": roster_slot  # keep for debugging
-            })
-
-        return players
-
-    except Exception as e:
-        return []
-
-@st.cache_data(ttl=300)
-def fetch_dk_nba_slate():
-    """
-    Main slate fetcher — tries multiple DK endpoints to find tier contest.
-    Returns (players list, draft_group_id or None, method used)
-    """
-    dg_id = fetch_dk_tier_contest_id()
-
-    if dg_id:
-        players = fetch_dk_tier_players(dg_id)
-        if players:
-            return players, dg_id, "live"
-
-    return [], None, "failed"
-
 @st.cache_data(ttl=600)
-def fetch_nba_player_stats(player_name):
-    """Fetch player recent stats from NBA Stats API."""
+def fetch_injuries():
+    """Fetch NBA injury report from Rotowire."""
+    injuries = {}
     try:
-        search_url = "https://stats.nba.com/stats/commonallplayers"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Referer": "https://www.nba.com",
-            "Accept": "application/json",
-            "x-nba-stats-origin": "stats",
-            "x-nba-stats-token": "true"
-        }
-        params = {"LeagueID": "00", "Season": "2024-25", "IsOnlyCurrentSeason": "1"}
-        resp = requests.get(search_url, headers=headers, params=params, timeout=15)
+        url = "https://www.rotowire.com/basketball/tables/injury-report.php?team=ALL&pos=ALL"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        resp = requests.get(url, headers=headers, timeout=12)
         if resp.status_code == 200:
-            data = resp.json()
-            rows = data["resultSets"][0]["rowSet"]
-            headers_list = data["resultSets"][0]["headers"]
-            for row in rows:
-                player = dict(zip(headers_list, row))
-                if player_name.lower() in player.get("DISPLAY_FIRST_LAST", "").lower():
-                    return player
+            dfs = pd.read_html(resp.text)
+            if dfs:
+                df = dfs[0]
+                for _, row in df.iterrows():
+                    name = str(row.get("Player", "") or "").strip()
+                    status = str(row.get("Status", "") or "").strip().upper()
+                    injury = str(row.get("Injury", "") or "").strip()
+                    if name and name.lower() != "nan":
+                        injuries[name.lower()] = {"status": status, "note": injury}
     except:
         pass
-    return {}
 
-@st.cache_data(ttl=600)
-def fetch_vegas_lines():
-    """Fetch NBA Vegas lines from The Odds API (free tier)."""
+    # Fallback: NBA Stats
     try:
-        # Uses oddsapi.io free tier — user needs API key in secrets
-        api_key = st.secrets.get("ODDS_API_KEY", "")
-        if not api_key:
-            return {}
-        url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/odds/"
-        params = {
-            "apiKey": api_key,
-            "regions": "us",
-            "markets": "spreads,totals",
-            "oddsFormat": "american"
-        }
-        resp = requests.get(url, params=params, timeout=10)
-        if resp.status_code == 200:
-            games = resp.json()
-            lines = {}
-            for game in games:
-                home = game.get("home_team", "")
-                away = game.get("away_team", "")
-                spread = None
-                total = None
-                for bm in game.get("bookmakers", []):
-                    for market in bm.get("markets", []):
-                        if market["key"] == "spreads":
-                            for outcome in market.get("outcomes", []):
-                                if outcome["name"] == home:
-                                    spread = outcome.get("point", 0)
-                        if market["key"] == "totals":
-                            for outcome in market.get("outcomes", []):
-                                if outcome["name"] == "Over":
-                                    total = outcome.get("point", 0)
-                    break  # first bookmaker only
-                lines[home] = {"spread": spread, "total": total, "opponent": away}
-                lines[away] = {"spread": -spread if spread else None, "total": total, "opponent": home}
-            return lines
-        return {}
-    except:
-        return {}
-
-@st.cache_data(ttl=300)
-def fetch_injury_report():
-    """Fetch NBA injury report from NBA Stats API."""
-    try:
-        url = "https://stats.nba.com/stats/leaguedashplayerstats"
+        url = "https://stats.nba.com/stats/leagueinjuriesv2?LeagueID=00&Season=2025-26"
         headers = {
             "User-Agent": "Mozilla/5.0",
             "Referer": "https://www.nba.com",
             "x-nba-stats-origin": "stats",
             "x-nba-stats-token": "true"
         }
-        # Simplified — pull from rotowire injury feed (no auth needed)
-        inj_url = "https://www.rotowire.com/basketball/tables/injury-report.php?team=ALL&pos=ALL"
-        resp = requests.get(inj_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
-            # Parse injury table
-            df = pd.read_html(resp.text)[0]
-            injured = {}
-            for _, row in df.iterrows():
-                name = str(row.get("Player", ""))
-                status = str(row.get("Status", ""))
-                injured[name] = status
-            return injured
+            data = resp.json()
+            rows = data.get("resultSets", [{}])[0].get("rowSet", [])
+            hdrs = data.get("resultSets", [{}])[0].get("headers", [])
+            for row in rows:
+                r = dict(zip(hdrs, row))
+                name = str(r.get("PLAYER_NAME", "") or "").strip().lower()
+                if name and name not in injuries:
+                    injuries[name] = {"status": "OUT", "note": r.get("INJURY_DESCRIPTION", "")}
     except:
         pass
-    return {}
 
-# ── Scoring Engine ─────────────────────────────────────────────────────────────
+    return injuries
 
-def score_player(player, vegas_lines, injuries):
-    """
-    Score a player 0-100 for tier recommendation.
-    Combines: DK projection, matchup, blowout risk, injury status.
-    """
-    score = 50.0
-    flags = []
+@st.cache_data(ttl=600)
+def fetch_vegas_lines():
+    """Fetch NBA Vegas lines from The Odds API."""
+    lines = {}
+    try:
+        api_key = st.secrets.get("ODDS_API_KEY", "")
+        if not api_key:
+            return lines
+        url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds/"
+        params = {"apiKey": api_key, "regions": "us", "markets": "spreads,totals", "oddsFormat": "american"}
+        resp = requests.get(url, params=params, timeout=12)
+        if resp.status_code == 200:
+            for game in resp.json():
+                home = game.get("home_team", "")
+                away = game.get("away_team", "")
+                spread, total = None, None
+                for bm in game.get("bookmakers", []):
+                    for market in bm.get("markets", []):
+                        if market["key"] == "spreads":
+                            for o in market.get("outcomes", []):
+                                if o["name"] == home:
+                                    spread = o.get("point", 0)
+                        if market["key"] == "totals":
+                            for o in market.get("outcomes", []):
+                                if o["name"] == "Over":
+                                    total = o.get("point", 0)
+                    break
+                lines[home] = {"spread": spread, "total": total, "opponent": away}
+                lines[away] = {"spread": -spread if spread else None, "total": total, "opponent": home}
+    except:
+        pass
+    return lines
 
-    # Base: DK projection (normalized)
-    proj = float(player.get("dk_projection", 0) or 0)
-    score += min(proj * 1.2, 25)
+@st.cache_data(ttl=1800)
+def fetch_recent_form(player_name):
+    """Fetch last 10 game DK FPTS average from NBA Stats API."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": "https://www.nba.com",
+            "x-nba-stats-origin": "stats",
+            "x-nba-stats-token": "true",
+            "Accept": "application/json"
+        }
+        # Find player ID
+        resp = requests.get(
+            "https://stats.nba.com/stats/commonallplayers",
+            headers=headers,
+            params={"LeagueID": "00", "Season": "2025-26", "IsOnlyCurrentSeason": "1"},
+            timeout=15
+        )
+        if resp.status_code != 200:
+            return None
 
-    # Vegas blowout risk
-    team = player.get("team", "")
-    line_data = vegas_lines.get(team, {})
-    spread = line_data.get("spread")
-    total = line_data.get("total")
+        data = resp.json()
+        rows = data["resultSets"][0]["rowSet"]
+        hdrs = data["resultSets"][0]["headers"]
+        player_id = None
+        name_lower = player_name.lower()
+        for row in rows:
+            p = dict(zip(hdrs, row))
+            full = p.get("DISPLAY_FIRST_LAST", "").lower()
+            if name_lower in full or full in name_lower:
+                player_id = p.get("PERSON_ID")
+                break
 
-    if spread is not None:
-        if abs(spread) >= 12:
-            if spread > 0:  # underdog — blowout victim risk
-                score -= 15
-                flags.append(("BLOWOUT RISK", "red"))
-            else:  # heavy favorite — could have garbage time
-                score += 5
-                flags.append(("FAV", "green"))
-        elif abs(spread) <= 4:
-            score += 8
-            flags.append(("CLOSE GAME", "blue"))
+        if not player_id:
+            return None
 
-    if total is not None:
-        if total >= 230:
-            score += 6
-            flags.append(("HIGH O/U", "blue"))
-        elif total <= 210:
-            score -= 5
+        # Get game log
+        resp = requests.get(
+            "https://stats.nba.com/stats/playergamelog",
+            headers=headers,
+            params={"PlayerID": player_id, "Season": "2025-26", "SeasonType": "Regular Season", "LeagueID": "00"},
+            timeout=15
+        )
+        if resp.status_code != 200:
+            return None
 
-    # Injury check
-    name = player.get("name", "")
-    inj_status = injuries.get(name, "")
-    status_field = player.get("status", "")
+        data = resp.json()
+        rows = data["resultSets"][0]["rowSet"]
+        hdrs = data["resultSets"][0]["headers"]
+        if not rows:
+            return None
 
-    if "OUT" in inj_status.upper() or "OUT" in status_field.upper():
-        score = 0
-        flags = [("OUT", "red")]
-    elif "QUESTIONABLE" in inj_status.upper() or "GTD" in status_field.upper():
-        score -= 20
-        flags.append(("GTD", "yellow"))
-    elif "PROBABLE" in inj_status.upper():
-        score -= 5
-        flags.append(("PROB", "yellow"))
+        fpts_list = []
+        for row in rows[:10]:
+            g = dict(zip(hdrs, row))
+            try:
+                fpts = (
+                    float(g.get("PTS", 0) or 0) +
+                    float(g.get("REB", 0) or 0) * 1.25 +
+                    float(g.get("AST", 0) or 0) * 1.5 +
+                    float(g.get("STL", 0) or 0) * 2.0 +
+                    float(g.get("BLK", 0) or 0) * 2.0 +
+                    float(g.get("TOV", 0) or 0) * -0.5 +
+                    float(g.get("FG3M", 0) or 0) * 0.5
+                )
+                fpts_list.append(fpts)
+            except:
+                pass
 
-    return round(max(score, 0), 1), flags
+        return round(np.mean(fpts_list), 1) if fpts_list else None
+    except:
+        return None
 
-def get_matchup_grade(player, vegas_lines):
-    """Return A/B/C/D matchup grade based on spread and total."""
-    team = player.get("team", "")
-    line_data = vegas_lines.get(team, {})
-    spread = line_data.get("spread")
-    total = line_data.get("total", 220)
-
-    if spread is None:
-        return "N/A", "#8892a4"
-
-    score = 0
-    if spread <= -6: score += 2
-    elif spread <= -3: score += 1
-    elif spread >= 10: score -= 3
-    elif spread >= 6: score -= 1
-
-    if total >= 228: score += 2
-    elif total >= 222: score += 1
-    elif total <= 212: score -= 2
-
-    if score >= 3: return "A+", "#52b788"
-    elif score >= 2: return "A", "#52b788"
-    elif score >= 1: return "B", "#4fc3f7"
-    elif score == 0: return "C", "#f5a623"
-    else: return "D", "#f87171"
-
-# ── Demo / Fallback Data ───────────────────────────────────────────────────────
-
-def get_demo_slate():
-    """Returns a realistic demo slate when DK API is unavailable."""
-    return [
-        # Tier 1
-        {"name": "Nikola Jokic", "team": "DEN", "position": "C", "tier": 1, "dk_projection": 62.5, "status": "", "opponent": "LAL"},
-        {"name": "Giannis Antetokounmpo", "team": "MIL", "position": "PF", "tier": 1, "dk_projection": 58.2, "status": "", "opponent": "CHI"},
-        {"name": "Luka Doncic", "team": "DAL", "position": "PG", "tier": 1, "dk_projection": 57.8, "status": "GTD", "opponent": "PHX"},
-        # Tier 2
-        {"name": "Anthony Edwards", "team": "MIN", "position": "SG", "tier": 2, "dk_projection": 48.3, "status": "", "opponent": "UTA"},
-        {"name": "Joel Embiid", "team": "PHI", "position": "C", "tier": 2, "dk_projection": 46.9, "status": "", "opponent": "ATL"},
-        {"name": "Jayson Tatum", "team": "BOS", "position": "SF", "tier": 2, "dk_projection": 45.1, "status": "", "opponent": "MIA"},
-        # Tier 3
-        {"name": "Tyrese Haliburton", "team": "IND", "position": "PG", "tier": 3, "dk_projection": 39.4, "status": "", "opponent": "ORL"},
-        {"name": "Donovan Mitchell", "team": "CLE", "position": "SG", "tier": 3, "dk_projection": 38.7, "status": "", "opponent": "DET"},
-        {"name": "Paolo Banchero", "team": "ORL", "position": "PF", "tier": 3, "dk_projection": 37.2, "status": "GTD", "opponent": "IND"},
-        # Tier 4
-        {"name": "Darius Garland", "team": "CLE", "position": "PG", "tier": 4, "dk_projection": 31.8, "status": "", "opponent": "DET"},
-        {"name": "Tyler Herro", "team": "MIA", "position": "SG", "tier": 4, "dk_projection": 30.5, "status": "", "opponent": "BOS"},
-        {"name": "Zach LaVine", "team": "CHI", "position": "SG", "tier": 4, "dk_projection": 29.9, "status": "", "opponent": "MIL"},
-        # Tier 5
-        {"name": "Bogdan Bogdanovic", "team": "ATL", "position": "SG", "tier": 5, "dk_projection": 24.1, "status": "", "opponent": "PHI"},
-        {"name": "Alperen Sengun", "team": "HOU", "position": "C", "tier": 5, "dk_projection": 23.7, "status": "", "opponent": "SAS"},
-        {"name": "Dereck Lively II", "team": "DAL", "position": "C", "tier": 5, "dk_projection": 22.4, "status": "", "opponent": "PHX"},
-        # Tier 6
-        {"name": "Bones Hyland", "team": "LAC", "position": "PG", "tier": 6, "dk_projection": 17.3, "status": "", "opponent": "GSW"},
-        {"name": "Tre Jones", "team": "SAS", "position": "PG", "tier": 6, "dk_projection": 16.8, "status": "", "opponent": "HOU"},
-        {"name": "Bol Bol", "team": "PHX", "position": "C", "tier": 6, "dk_projection": 15.9, "status": "", "opponent": "DAL"},
-    ]
-
-
+# ── CSV Parser ────────────────────────────────────────────────────────────────
 def parse_dk_csv(uploaded_file):
-    """
-    Parse a DraftKings tier contest CSV export into player list.
-    DK CSV columns: Position, Name + ID, Name, ID, Roster Position,
-    Salary, Game Info, TeamAbbrev, AvgPointsPerGame
-    For tier contests, Position field is T1-T6.
-    """
+    """Parse DraftKings tier contest CSV. Returns list of player dicts."""
     try:
         df = pd.read_csv(uploaded_file)
         players = []
-
         for _, row in df.iterrows():
-            # Tier is in "Roster Position" column (T1-T6)
             roster_pos = str(row.get("Roster Position", "") or "").strip()
-            position = str(row.get("Position", "") or "").strip()
+            position   = str(row.get("Position", "") or "").strip()
 
             tier = None
             if roster_pos.startswith("T") and len(roster_pos) == 2:
@@ -547,29 +302,34 @@ def parse_dk_csv(uploaded_file):
                     tier = int(roster_pos[1])
                 except:
                     pass
-
             if tier is None:
                 continue
 
             name = str(row.get("Name", "") or "").strip()
             if not name:
-                # Try Name + ID column
-                name_id = str(row.get("Name + ID", "") or "")
-                name = name_id.split("(")[0].strip() if "(" in name_id else name_id.strip()
+                nid = str(row.get("Name + ID", "") or "")
+                name = nid.split("(")[0].strip() if "(" in nid else nid.strip()
 
-            team = str(row.get("TeamAbbrev", "") or "").strip()
-            avg_pts = float(row.get("AvgPointsPerGame", 0) or 0)
+            team      = str(row.get("TeamAbbrev", "") or "").strip()
+            avg_pts   = float(row.get("AvgPointsPerGame", 0) or 0)
             game_info = str(row.get("Game Info", "") or "")
 
-            # Parse opponent from game info (e.g. "NYK@ATL 07:30PM ET")
+            # Parse opponent
             opponent = ""
+            game_time_str = ""
             if "@" in game_info:
-                teams_part = game_info.split(" ")[0]
-                parts = teams_part.split("@")
-                if len(parts) == 2:
-                    away_team = parts[0].strip()
-                    home_team = parts[1].strip()
-                    opponent = home_team if team == away_team else away_team
+                parts = game_info.split(" ")
+                matchup = parts[0] if parts else ""
+                teams = matchup.split("@")
+                if len(teams) == 2:
+                    away_t, home_t = teams[0].strip(), teams[1].strip()
+                    opponent = home_t if team == away_t else away_t
+                # Try to parse game time: "NYK@ATL 07:30PM ET"
+                try:
+                    time_part = " ".join(parts[1:3]) if len(parts) >= 3 else ""
+                    game_time_str = time_part.replace(" ET", "").strip()
+                except:
+                    pass
 
             players.append({
                 "name": name,
@@ -579,24 +339,256 @@ def parse_dk_csv(uploaded_file):
                 "dk_projection": avg_pts,
                 "status": "",
                 "opponent": opponent,
+                "game_time_str": game_time_str,
+                # Will be filled in by scoring
+                "inj_status": "",
+                "inj_note": "",
+                "recent_form": None,
+                "vegas_spread": None,
+                "vegas_total": None,
+                "cash_score": 0,
+                "gpp_score": 0,
+                "cash_reasons": [],
+                "gpp_reasons": [],
             })
-
         return players
     except Exception as e:
         st.error(f"CSV parse error: {e}")
         return []
 
-# ── Save to Supabase ───────────────────────────────────────────────────────────
+# ── Scoring Engine ────────────────────────────────────────────────────────────
+def get_inj_status(player_name, injuries):
+    """Look up injury status for a player."""
+    name_lower = player_name.lower()
+    # Exact match
+    if name_lower in injuries:
+        return injuries[name_lower]
+    # Partial match
+    for key, val in injuries.items():
+        if name_lower in key or key in name_lower:
+            return val
+    return {"status": "", "note": ""}
 
-def save_lineup(picks, contest_date):
-    """Save today's tier picks to Supabase dfs_lineups table."""
+def get_vegas(team, vegas_lines):
+    """Look up Vegas spread/total for a team."""
+    full_name = DK_TEAM_MAP.get(team, team)
+    for key in [team, full_name]:
+        if key in vegas_lines:
+            return vegas_lines[key]
+    return {"spread": None, "total": None}
+
+def score_players(players, injuries, vegas_lines, load_recent_form=False):
+    """
+    Score each player for cash and GPP separately.
+    Cash score = maximize floor (safe picks)
+    GPP score  = maximize ceiling + ownership leverage
+    """
+    # Build ownership proxy — players higher in tier list = higher ownership
+    # We use DK projection as ownership proxy (higher proj = more chalk)
+    for tier_num in range(1, 7):
+        tier_players = [p for p in players if p["tier"] == tier_num]
+        if not tier_players:
+            continue
+        max_proj = max(p["dk_projection"] for p in tier_players) or 1
+        for p in tier_players:
+            p["ownership_proxy"] = p["dk_projection"] / max_proj  # 0-1, higher = more chalk
+
+    for p in players:
+        inj = get_inj_status(p["name"], injuries)
+        veg = get_vegas(p["team"], vegas_lines)
+
+        p["inj_status"] = inj.get("status", "")
+        p["inj_note"]   = inj.get("note", "")
+        p["vegas_spread"] = veg.get("spread")
+        p["vegas_total"]  = veg.get("total")
+
+        # Optional: fetch recent form (slow — only if requested)
+        if load_recent_form and p["recent_form"] is None:
+            p["recent_form"] = fetch_recent_form(p["name"])
+
+        proj   = p["dk_projection"]
+        spread = p["vegas_spread"]
+        total  = p["vegas_total"]
+        status = p["inj_status"].upper()
+        ownership = p.get("ownership_proxy", 0.5)
+
+        cash_score = 50.0
+        gpp_score  = 50.0
+        cash_reasons = []
+        gpp_reasons  = []
+
+        # ── Injury ────────────────────────────────────────────────────────────
+        if "OUT" in status:
+            p["cash_score"] = 0
+            p["gpp_score"]  = 0
+            p["cash_reasons"] = ["OUT — do not play"]
+            p["gpp_reasons"]  = ["OUT — do not play"]
+            continue
+
+        if "QUESTIONABLE" in status or "GTD" in status or "DOUBTFUL" in status:
+            cash_score -= 25
+            gpp_score  -= 10  # GPP: risky but if plays = low ownership boom
+            cash_reasons.append("GTD — risky for cash")
+            gpp_reasons.append("GTD — if confirmed, low ownership upside")
+
+        # ── Projection ───────────────────────────────────────────────────────
+        proj_bonus = min((proj - 20) * 0.8, 30)
+        cash_score += proj_bonus
+        gpp_score  += proj_bonus * 0.7  # GPP cares less about raw proj
+
+        # ── Recent form ──────────────────────────────────────────────────────
+        if p["recent_form"] is not None:
+            form_diff = p["recent_form"] - proj
+            if form_diff > 5:
+                cash_score += 8
+                gpp_score  += 6
+                cash_reasons.append(f"Hot — L10 avg {p['recent_form']:.1f} (+{form_diff:.0f} vs proj)")
+                gpp_reasons.append(f"Hot streak — L10 avg {p['recent_form']:.1f}")
+            elif form_diff < -5:
+                cash_score -= 6
+                gpp_score  -= 4
+                cash_reasons.append(f"Cold — L10 avg {p['recent_form']:.1f} ({form_diff:.0f} vs proj)")
+
+        # ── Vegas spread ─────────────────────────────────────────────────────
+        if spread is not None:
+            if spread <= -10:
+                cash_score += 10
+                gpp_score  += 5
+                cash_reasons.append(f"Heavy fav ({spread:+.1f}) — safe floor")
+                gpp_reasons.append(f"Fav {spread:+.1f} — chalk, lower GPP value")
+            elif spread <= -5:
+                cash_score += 6
+                gpp_score  += 4
+                cash_reasons.append(f"Favored ({spread:+.1f})")
+            elif spread >= 10:
+                cash_score -= 15
+                gpp_score  -= 8
+                cash_reasons.append(f"Big underdog ({spread:+.1f}) — blowout risk")
+                gpp_reasons.append(f"Underdog {spread:+.1f} — blowout risk")
+            elif spread >= 5:
+                cash_score -= 6
+                gpp_score  -= 3
+            elif abs(spread) <= 3:
+                cash_score += 4
+                gpp_score  += 9  # Close games = more GPP variance/upside
+                gpp_reasons.append(f"Close game ({spread:+.1f}) — GPP upside")
+
+        # ── Vegas total ──────────────────────────────────────────────────────
+        if total is not None:
+            if total >= 230:
+                cash_score += 6
+                gpp_score  += 8
+                cash_reasons.append(f"High O/U {total}")
+                gpp_reasons.append(f"High O/U {total} — pace up")
+            elif total >= 224:
+                cash_score += 3
+                gpp_score  += 4
+            elif total <= 210:
+                cash_score -= 5
+                gpp_score  -= 4
+                cash_reasons.append(f"Low O/U {total} — slow game")
+
+        # ── GPP ownership leverage ────────────────────────────────────────────
+        # Low ownership = GPP bonus, high ownership = GPP penalty
+        if ownership < 0.5:
+            gpp_score += 12
+            gpp_reasons.append("Low ownership — GPP differentiator")
+        elif ownership < 0.7:
+            gpp_score += 5
+            gpp_reasons.append("Moderate ownership")
+        else:
+            gpp_score -= 5
+            gpp_reasons.append("High chalk — fading in GPP has merit")
+
+        # Floor for cash: penalize high-variance players more
+        # (players with huge upside but inconsistent = bad for cash)
+        if proj > 45 and spread is not None and spread >= 5:
+            cash_score -= 8
+            cash_reasons.append("High proj but wrong side — floor risk")
+
+        p["cash_score"]    = max(round(cash_score, 1), 0)
+        p["gpp_score"]     = max(round(gpp_score, 1), 0)
+        p["cash_reasons"]  = cash_reasons[:3]
+        p["gpp_reasons"]   = gpp_reasons[:3]
+
+    return players
+
+# ── Game Lock Detection ───────────────────────────────────────────────────────
+def get_game_locks(players):
+    """
+    Build a list of unique games with their lock times from the slate.
+    Returns list of {matchup, teams, lock_time_str, minutes_until_lock}
+    """
+    now_et = datetime.now(ET)
+    games = {}
+    for p in players:
+        opp = p.get("opponent", "")
+        team = p.get("team", "")
+        gt = p.get("game_time_str", "")
+        if not opp or not gt:
+            continue
+        matchup = "-".join(sorted([team, opp]))
+        if matchup not in games:
+            # Parse time string e.g. "07:30PM" or "07:30PM ET"
+            try:
+                gt_clean = gt.replace(" ET", "").strip()
+                t = datetime.strptime(gt_clean, "%I:%M%p")
+                lock_dt = now_et.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+                if lock_dt < now_et:
+                    lock_dt += timedelta(days=1)
+                mins = int((lock_dt - now_et).total_seconds() / 60)
+                games[matchup] = {
+                    "matchup": f"{team} vs {opp}",
+                    "teams": [team, opp],
+                    "lock_time_str": gt,
+                    "lock_dt": lock_dt,
+                    "minutes_until_lock": mins
+                }
+            except:
+                pass
+
+    return sorted(games.values(), key=lambda x: x.get("minutes_until_lock", 9999))
+
+# ── Late Swap Detection ───────────────────────────────────────────────────────
+def check_late_swap_alerts(picks, players, injuries):
+    """
+    Check if any picked players have injury issues.
+    Returns list of alert dicts.
+    """
+    alerts = []
+    for tier_num, player_name in picks.items():
+        player = next((p for p in players if p["name"] == player_name), None)
+        if not player:
+            continue
+        inj = get_inj_status(player_name, injuries)
+        status = inj.get("status", "").upper()
+        if "OUT" in status:
+            alerts.append({
+                "tier": tier_num,
+                "player": player_name,
+                "status": "OUT",
+                "note": inj.get("note", ""),
+                "severity": "red"
+            })
+        elif "GTD" in status or "QUESTIONABLE" in status or "DOUBTFUL" in status:
+            alerts.append({
+                "tier": tier_num,
+                "player": player_name,
+                "status": status,
+                "note": inj.get("note", ""),
+                "severity": "yellow"
+            })
+    return alerts
+
+# ── Save/Load Lineup ──────────────────────────────────────────────────────────
+def save_lineup(picks, contest_date, contest_type="TIER"):
     if not supabase:
         return False
     try:
         record = {
             "contest_date": contest_date,
             "sport": "NBA",
-            "contest_type": "TIER",
+            "contest_type": contest_type,
             "tier_1": picks.get(1, ""),
             "tier_2": picks.get(2, ""),
             "tier_3": picks.get(3, ""),
@@ -608,11 +600,10 @@ def save_lineup(picks, contest_date):
         supabase.table("dfs_lineups").insert(record).execute()
         return True
     except Exception as e:
-        st.error(f"Supabase save error: {e}")
+        st.error(f"Save error: {e}")
         return False
 
-def load_lineup_history():
-    """Load past lineups from Supabase."""
+def load_history():
     if not supabase:
         return pd.DataFrame()
     try:
@@ -621,269 +612,493 @@ def load_lineup_history():
     except:
         return pd.DataFrame()
 
-# ── UI ────────────────────────────────────────────────────────────────────────
+# ── Badge HTML ────────────────────────────────────────────────────────────────
+def badge(text, color):
+    return f'<span class="badge b-{color}">{text}</span>'
+
+def player_badges(p):
+    html = ""
+    status = p.get("inj_status", "").upper()
+    if "OUT" in status:
+        html += badge("OUT", "red")
+    elif "GTD" in status or "QUESTIONABLE" in status:
+        html += badge("GTD", "yellow")
+    elif "PROBABLE" in status:
+        html += badge("PROB", "yellow")
+
+    spread = p.get("vegas_spread")
+    total  = p.get("vegas_total")
+    if spread is not None:
+        if spread <= -8:
+            html += badge(f"FAV {spread:+.0f}", "green")
+        elif spread >= 8:
+            html += badge(f"DOG {spread:+.0f}", "red")
+        elif abs(spread) <= 3:
+            html += badge("CLOSE GAME", "blue")
+    if total and total >= 228:
+        html += badge(f"O/U {total}", "blue")
+    if p.get("recent_form"):
+        html += badge(f"L10: {p['recent_form']:.0f}", "purple")
+    return html
+
+# ── Main UI ───────────────────────────────────────────────────────────────────
 
 # Header
+now_et = datetime.now(ET)
 st.markdown(f"""
 <div class="main-header">
   <h1>🏀 DK Tier Optimizer</h1>
-  <div class="subtitle">NBA · DraftKings Tier Contests · {date.today().strftime('%A, %B %d, %Y')}</div>
+  <div class="subtitle">NBA · DraftKings Tier Contests · {now_et.strftime('%A, %B %d, %Y')} · {now_et.strftime('%I:%M %p ET')}</div>
 </div>
 """, unsafe_allow_html=True)
 
-# Sidebar
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
+
     slate_mode = st.radio("Slate Source", ["📂 Upload DK CSV", "🔶 Demo Slate"], index=0)
-    auto_refresh = st.toggle("Auto-Refresh (5 min)", value=False)
+
+    st.markdown("---")
+    st.markdown("### 🔄 Auto Refresh")
+    auto_refresh = st.toggle("Auto-Refresh", value=False)
+    refresh_interval = st.select_slider(
+        "Interval",
+        options=[5, 10, 15, 30],
+        value=15,
+        format_func=lambda x: f"{x} min"
+    )
+
+    st.markdown("---")
+    st.markdown("### 📊 Options")
+    load_form = st.toggle("Load Recent Form (L10)", value=False,
+                          help="Fetches last 10 game averages from NBA Stats API — slower but more accurate")
+    show_all  = st.toggle("Show All Players Per Tier", value=False)
+
     st.markdown("---")
     st.markdown("### 🔑 API Status")
-
     odds_key = st.secrets.get("ODDS_API_KEY", "")
-    sb_status = "✅ Connected" if SUPABASE_URL else "❌ Not configured"
-    odds_status = "✅ Configured" if odds_key else "⚠️ No key (Vegas disabled)"
+    st.markdown(f"**Supabase:** {'✅' if SUPABASE_URL else '❌'}")
+    st.markdown(f"**Odds API:** {'✅' if odds_key else '⚠️ No key'}")
+    st.markdown(f"**Injury Feed:** ✅ Rotowire")
 
-    st.markdown(f"**Supabase:** {sb_status}")
-    st.markdown(f"**Odds API:** {odds_status}")
-    st.markdown("---")
-    st.markdown("### 📋 Scoring Weights")
-    proj_weight = st.slider("Projection Weight", 0.5, 2.0, 1.2, 0.1)
-    blowout_penalty = st.slider("Blowout Penalty", 5, 25, 15, 5)
-    gtd_penalty = st.slider("GTD Penalty", 5, 30, 20, 5)
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tab1, tab2, tab3, tab4 = st.tabs(["🏀 Today's Slate", "📋 My Lineup", "🔄 Late Swap", "📊 History"])
 
-# Tabs
-tab1, tab2, tab3 = st.tabs(["🏀 Today's Slate", "📋 My Lineup", "📊 History"])
-
+# ── Load Data ─────────────────────────────────────────────────────────────────
 with tab1:
-    # CSV Upload mode
     players = []
+
     if slate_mode == "📂 Upload DK CSV":
         st.markdown("""
-        <div style="background:#1e2535; border:1px solid #f5a623; border-radius:8px; padding:0.8rem 1rem; margin-bottom:1rem">
-        <b style="color:#f5a623">📂 How to get your DK CSV:</b><br>
-        <span style="color:#8892a4; font-size:0.85rem">
-        1. Open DraftKings → NBA → Tiers → click any contest → <b>Draft Team</b><br>
-        2. Scroll to bottom → click <b>Export to CSV</b><br>
-        3. Upload that file below ⬇️
+        <div style="background:#1a1e2e; border:1px solid #f5a623; border-radius:8px; padding:0.8rem 1rem; margin-bottom:1rem">
+        <b style="color:#f5a623">📂 How to get your DK CSV</b><br>
+        <span style="color:#8892a4; font-size:0.82rem">
+        DraftKings → NBA → Tiers → any contest → <b>Draft Team</b> → scroll bottom → <b>Export to CSV</b>
         </span>
         </div>
         """, unsafe_allow_html=True)
 
-        uploaded_file = st.file_uploader("Upload DK Tier CSV", type=["csv"], label_visibility="collapsed")
-
-        if uploaded_file:
-            players = parse_dk_csv(uploaded_file)
+        uploaded = st.file_uploader("Upload DK Tier CSV", type=["csv"], label_visibility="collapsed")
+        if uploaded:
+            players = parse_dk_csv(uploaded)
             if players:
-                st.success(f"✅ Loaded {len(players)} players from DK CSV across {len(set(p['tier'] for p in players))} tiers")
+                st.success(f"✅ {len(players)} players loaded across {len(set(p['tier'] for p in players))} tiers")
             else:
-                st.error("❌ Could not parse CSV. Make sure it's a DraftKings tier contest export.")
-                players = get_demo_slate()
+                st.error("❌ Could not parse CSV — make sure it's a DK tier contest export.")
         else:
             st.info("👆 Upload your DK CSV to load tonight's real slate.")
-            players = get_demo_slate()
     else:
-        players = get_demo_slate()
+        # Demo slate
+        players = [
+            {"name": "Victor Wembanyama", "team": "SAS", "position": "C", "tier": 1, "dk_projection": 54.2, "status": "", "opponent": "LAC", "game_time_str": "08:30PM"},
+            {"name": "Giannis Antetokounmpo", "team": "MIL", "position": "PF", "tier": 1, "dk_projection": 58.1, "status": "", "opponent": "CHI", "game_time_str": "07:00PM"},
+            {"name": "Nikola Jokic", "team": "DEN", "position": "C", "tier": 1, "dk_projection": 62.5, "status": "", "opponent": "UTA", "game_time_str": "09:00PM"},
+            {"name": "Anthony Edwards", "team": "MIN", "position": "SG", "tier": 2, "dk_projection": 46.3, "status": "GTD", "opponent": "DET", "game_time_str": "07:00PM"},
+            {"name": "Donovan Mitchell", "team": "CLE", "position": "SG", "tier": 2, "dk_projection": 44.6, "status": "", "opponent": "GSW", "game_time_str": "10:00PM"},
+            {"name": "Deni Avdija", "team": "POR", "position": "SF", "tier": 2, "dk_projection": 43.8, "status": "", "opponent": "NOP", "game_time_str": "10:00PM"},
+            {"name": "James Harden", "team": "CLE", "position": "PG", "tier": 3, "dk_projection": 45.4, "status": "", "opponent": "GSW", "game_time_str": "10:00PM"},
+            {"name": "LeBron James", "team": "LAL", "position": "PF", "tier": 3, "dk_projection": 40.9, "status": "", "opponent": "OKC", "game_time_str": "09:30PM"},
+            {"name": "Evan Mobley", "team": "CLE", "position": "PF", "tier": 3, "dk_projection": 40.1, "status": "", "opponent": "GSW", "game_time_str": "10:00PM"},
+            {"name": "Austin Reaves", "team": "LAL", "position": "SG", "tier": 4, "dk_projection": 39.4, "status": "", "opponent": "OKC", "game_time_str": "09:30PM"},
+            {"name": "Chet Holmgren", "team": "OKC", "position": "PF", "tier": 4, "dk_projection": 35.0, "status": "", "opponent": "LAL", "game_time_str": "09:30PM"},
+            {"name": "Dejounte Murray", "team": "NOP", "position": "PG", "tier": 4, "dk_projection": 35.5, "status": "", "opponent": "POR", "game_time_str": "10:00PM"},
+            {"name": "Stephon Castle", "team": "SAS", "position": "SG", "tier": 5, "dk_projection": 36.7, "status": "", "opponent": "LAC", "game_time_str": "10:30PM"},
+            {"name": "Rudy Gobert", "team": "MIN", "position": "C", "tier": 5, "dk_projection": 32.9, "status": "", "opponent": "DET", "game_time_str": "07:00PM"},
+            {"name": "Brandon Miller", "team": "CHA", "position": "SF", "tier": 5, "dk_projection": 35.6, "status": "", "opponent": "PHX", "game_time_str": "07:00PM"},
+            {"name": "De'Aaron Fox", "team": "SAS", "position": "PG", "tier": 6, "dk_projection": 34.4, "status": "", "opponent": "LAC", "game_time_str": "10:30PM"},
+            {"name": "Kobe Knueppel", "team": "CHA", "position": "SG", "tier": 6, "dk_projection": 33.4, "status": "", "opponent": "PHX", "game_time_str": "07:00PM"},
+            {"name": "Draymond Green", "team": "GSW", "position": "PF", "tier": 6, "dk_projection": 31.2, "status": "", "opponent": "CLE", "game_time_str": "10:00PM"},
+        ]
+        # Add missing keys
+        for p in players:
+            p.update({"inj_status": "", "inj_note": "", "recent_form": None,
+                      "vegas_spread": None, "vegas_total": None,
+                      "cash_score": 0, "gpp_score": 0,
+                      "cash_reasons": [], "gpp_reasons": [], "ownership_proxy": 0.5})
         st.info("📌 Demo mode — showing sample slate.")
 
-    with st.spinner("Scoring players..."):
+    if not players:
+        st.stop()
+
+    # Score players
+    with st.spinner("Loading injuries, Vegas lines, scoring players..."):
+        injuries    = fetch_injuries()
         vegas_lines = fetch_vegas_lines()
-        injuries = fetch_injury_report()
+        players     = score_players(players, injuries, vegas_lines, load_recent_form=load_form)
 
-    # Score all players
-    for p in players:
-        p["score"], p["flags"] = score_player(p, vegas_lines, injuries)
-        p["matchup_grade"], p["grade_color"] = get_matchup_grade(p, vegas_lines)
+    # Game lock status
+    game_locks = get_game_locks(players)
 
-    # Summary metrics
-    total_players = len(players)
-    gtd_count = sum(1 for p in players if any(f[0] == "GTD" for f in p["flags"]))
-    out_count = sum(1 for p in players if any(f[0] == "OUT" for f in p["flags"]))
-    close_games = sum(1 for p in players if any(f[0] == "CLOSE GAME" for f in p["flags"]))
+    # ── Lock Alerts ───────────────────────────────────────────────────────────
+    urgent_locks = [g for g in game_locks if 0 <= g["minutes_until_lock"] <= 30]
+    if urgent_locks:
+        for gl in urgent_locks:
+            mins = gl["minutes_until_lock"]
+            color = "urgent" if mins <= 10 else "warn"
+            st.markdown(f"""
+            <div class="alert-lock">
+            ⏰ <span class="countdown countdown-{color}">LOCK IN {mins} MIN</span>
+            — {gl['matchup']} locks at {gl['lock_time_str']}
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ── Slate Metrics ─────────────────────────────────────────────────────────
+    out_count  = sum(1 for p in players if "OUT" in p.get("inj_status", "").upper())
+    gtd_count  = sum(1 for p in players if any(x in p.get("inj_status", "").upper() for x in ["GTD", "QUESTIONABLE", "DOUBTFUL"]))
+    fav_count  = sum(1 for p in players if p.get("vegas_spread") is not None and p["vegas_spread"] <= -5)
+    games_count = len(set(f"{p['team']}-{p['opponent']}" for p in players if p.get("opponent")))
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.markdown(f'<div class="metric-card"><div class="metric-value">{total_players}</div><div class="metric-label">Players in Slate</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-val">{len(players)}</div><div class="metric-lbl">Players</div></div>', unsafe_allow_html=True)
     with c2:
-        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#f5a623">{gtd_count}</div><div class="metric-label">GTD / Questionable</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-val" style="color:#f87171">{out_count}</div><div class="metric-lbl">Out</div></div>', unsafe_allow_html=True)
     with c3:
-        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#f87171">{out_count}</div><div class="metric-label">Out</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-val" style="color:#f5a623">{gtd_count}</div><div class="metric-lbl">GTD</div></div>', unsafe_allow_html=True)
     with c4:
-        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#4fc3f7">{close_games}</div><div class="metric-label">Close Game Spots</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-val" style="color:#4fc3f7">{games_count}</div><div class="metric-lbl">Games</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tier_colors = {1: "t1", 2: "t2", 3: "t3", 4: "t4", 5: "t5", 6: "t6"}
-    tier_labels = {1: "Tier 1 — Elite", 2: "Tier 2 — Star", 3: "Tier 3 — Premium", 4: "Tier 4 — Mid", 5: "Tier 5 — Value", 6: "Tier 6 — Dart"}
+    # ── Game Lock Countdown Bar ───────────────────────────────────────────────
+    if game_locks:
+        st.markdown("**⏱ Game Locks**")
+        for gl in game_locks:
+            mins = gl["minutes_until_lock"]
+            if mins < 0:
+                color = "#f87171"; status_txt = "LOCKED"
+            elif mins <= 15:
+                color = "#f87171"; status_txt = f"🔴 {mins}m"
+            elif mins <= 45:
+                color = "#f5a623"; status_txt = f"🟡 {mins}m"
+            else:
+                h, m = divmod(mins, 60)
+                status_txt = f"🟢 {h}h {m}m" if h else f"🟢 {m}m"
+                color = "#52b788"
+            st.markdown(f"""
+            <div class="game-lock-bar">
+              <span style="color:#e8eaf0; font-size:0.85rem">{gl['matchup']}</span>
+              <span style="color:{color}; font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:0.9rem">{status_txt}</span>
+            </div>
+            """, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    # Initialize picks in session state
-    if "picks" not in st.session_state:
-        st.session_state.picks = {}
+    # ── Tier Panels ───────────────────────────────────────────────────────────
+    if "picks_cash" not in st.session_state:
+        st.session_state.picks_cash = {}
+    if "picks_gpp" not in st.session_state:
+        st.session_state.picks_gpp = {}
 
     for tier_num in range(1, 7):
         tier_players = [p for p in players if p["tier"] == tier_num]
-        tier_players.sort(key=lambda x: x["score"], reverse=True)
-        top2 = tier_players[:2]
-        rest = tier_players[2:]
-
-        color_class = tier_colors[tier_num]
-        label = tier_labels[tier_num]
-
-        st.markdown(f'<div class="tier-label {color_class}">{label}</div>', unsafe_allow_html=True)
-
-        if not top2:
-            st.markdown("_No players found for this tier._")
+        if not tier_players:
             continue
 
-        cols = st.columns(len(top2))
-        for idx, (col, player) in enumerate(zip(cols, top2)):
-            with col:
-                score = player["score"]
-                flags = player["flags"]
-                grade = player["matchup_grade"]
-                grade_color = player["grade_color"]
-                proj = player.get("dk_projection", 0)
-                opp = player.get("opponent", "")
-                pos = player.get("position", "")
-                team = player.get("team", "")
+        # Sort for cash (floor) and GPP (ceiling) separately
+        cash_sorted = sorted(tier_players, key=lambda x: x["cash_score"], reverse=True)
+        gpp_sorted  = sorted(tier_players, key=lambda x: x["gpp_score"],  reverse=True)
 
-                # Rank badge
-                rank_label = "🥇 TOP PICK" if idx == 0 else "2nd OPTION"
+        tc = TIER_CLASSES[tier_num]
+        st.markdown(f'<div class="tier-header {tc}">{TIER_LABELS[tier_num]}</div>', unsafe_allow_html=True)
 
-                # Build flag HTML
-                flag_html = ""
-                for flag_text, flag_color in flags:
-                    flag_html += f'<span class="badge badge-{flag_color}">{flag_text}</span>'
+        col_cash, col_gpp = st.columns(2)
 
-                # Vegas info
-                line_data = vegas_lines.get(team, {})
-                spread = line_data.get("spread")
-                total = line_data.get("total")
+        # ── Cash picks ────────────────────────────────────────────────────────
+        with col_cash:
+            st.markdown(f'<div class="label-cash">💵 Triple Up / Cash</div>', unsafe_allow_html=True)
+            for idx, p in enumerate(cash_sorted[:2]):
+                rank = "🥇 TOP CASH PICK" if idx == 0 else "2nd CASH OPTION"
+                proj = p["dk_projection"]
+                spread = p.get("vegas_spread")
+                total  = p.get("vegas_total")
                 vegas_str = ""
                 if spread is not None:
-                    sign = "+" if spread > 0 else ""
-                    vegas_str = f"Spread: {sign}{spread} | O/U: {total}"
+                    vegas_str = f"Spread {spread:+.1f}"
+                    if total:
+                        vegas_str += f" · O/U {total}"
+
+                reasons_html = ""
+                for r in p["cash_reasons"]:
+                    reasons_html += f'<div class="preason">• {r}</div>'
 
                 st.markdown(f"""
-                <div class="player-row">
-                  <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                <div class="pick-cash">
+                  <div style="display:flex; justify-content:space-between; align-items:flex-start">
                     <div>
-                      <div class="player-name">{player['name']}</div>
-                      <div class="player-meta">{pos} · {team} vs {opp} · Proj: {proj:.1f} pts</div>
-                      <div style="margin-top:4px">{flag_html}<span class="badge badge-blue">MU: {grade}</span></div>
-                      <div class="player-meta" style="margin-top:4px">{vegas_str}</div>
+                      <div class="pname">{p['name']}</div>
+                      <div class="pmeta">{p['position']} · {p['team']} vs {p['opponent']} · Proj: {proj:.1f}</div>
+                      <div class="pmeta">{vegas_str}</div>
+                      <div style="margin-top:4px">{player_badges(p)}</div>
+                      {reasons_html}
                     </div>
-                    <div style="text-align:center">
-                      <div class="score-circle" style="background:#252d3d; color:#f5a623">{score:.0f}</div>
-                      <div style="font-size:0.65rem; color:#8892a4; margin-top:3px">SCORE</div>
+                    <div style="text-align:center; min-width:44px">
+                      <div style="background:#0a2540; border-radius:50%; width:40px; height:40px; display:flex; align-items:center; justify-content:center; font-family:'Barlow Condensed',sans-serif; font-size:1rem; font-weight:700; color:#4fc3f7">{p['cash_score']:.0f}</div>
+                      <div style="font-size:0.6rem; color:#8892a4; margin-top:2px">CASH</div>
                     </div>
                   </div>
-                  <div style="margin-top:6px; font-size:0.72rem; color:#8892a4">{rank_label}</div>
+                  <div style="font-size:0.68rem; color:#4fc3f7; margin-top:5px">{rank}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-        # Show rest of tier in expander
-        if rest:
-            with st.expander(f"Show all {len(rest) + len(top2)} Tier {tier_num} players"):
-                all_players_df = pd.DataFrame([{
-                    "Player": p["name"],
-                    "Team": p["team"],
-                    "Pos": p["position"],
-                    "vs": p["opponent"],
-                    "Projection": p["dk_projection"],
-                    "Score": p["score"],
-                    "Matchup": p["matchup_grade"],
-                    "Flags": ", ".join(f[0] for f in p["flags"])
-                } for p in tier_players])
-                st.dataframe(all_players_df, use_container_width=True, hide_index=True)
+        # ── GPP picks ─────────────────────────────────────────────────────────
+        with col_gpp:
+            st.markdown(f'<div class="label-gpp">🏆 GPP / Tournament</div>', unsafe_allow_html=True)
+            for idx, p in enumerate(gpp_sorted[:2]):
+                rank = "🥇 TOP GPP PICK" if idx == 0 else "2nd GPP OPTION"
+                proj = p["dk_projection"]
+                spread = p.get("vegas_spread")
+                total  = p.get("vegas_total")
+                vegas_str = ""
+                if spread is not None:
+                    vegas_str = f"Spread {spread:+.1f}"
+                    if total:
+                        vegas_str += f" · O/U {total}"
+
+                reasons_html = ""
+                for r in p["gpp_reasons"]:
+                    reasons_html += f'<div class="preason">• {r}</div>'
+
+                st.markdown(f"""
+                <div class="pick-gpp">
+                  <div style="display:flex; justify-content:space-between; align-items:flex-start">
+                    <div>
+                      <div class="pname">{p['name']}</div>
+                      <div class="pmeta">{p['position']} · {p['team']} vs {p['opponent']} · Proj: {proj:.1f}</div>
+                      <div class="pmeta">{vegas_str}</div>
+                      <div style="margin-top:4px">{player_badges(p)}</div>
+                      {reasons_html}
+                    </div>
+                    <div style="text-align:center; min-width:44px">
+                      <div style="background:#2d1040; border-radius:50%; width:40px; height:40px; display:flex; align-items:center; justify-content:center; font-family:'Barlow Condensed',sans-serif; font-size:1rem; font-weight:700; color:#ce93d8">{p['gpp_score']:.0f}</div>
+                      <div style="font-size:0.6rem; color:#8892a4; margin-top:2px">GPP</div>
+                    </div>
+                  </div>
+                  <div style="font-size:0.68rem; color:#ce93d8; margin-top:5px">{rank}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        # Show all players in expander
+        if show_all and len(tier_players) > 2:
+            with st.expander(f"All {len(tier_players)} Tier {tier_num} players"):
+                rows = []
+                for p in cash_sorted:
+                    rows.append({
+                        "Player": p["name"],
+                        "Team": p["team"],
+                        "vs": p["opponent"],
+                        "Proj": p["dk_projection"],
+                        "Cash Score": p["cash_score"],
+                        "GPP Score": p["gpp_score"],
+                        "Spread": p.get("vegas_spread", ""),
+                        "O/U": p.get("vegas_total", ""),
+                        "Injury": p.get("inj_status", ""),
+                        "L10": p.get("recent_form", "")
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
+# ── My Lineup Tab ─────────────────────────────────────────────────────────────
 with tab2:
     st.markdown("### 📋 Build Your Lineup")
-    st.markdown("Select your final pick for each tier. Model recommends top 2 — you make the call.")
 
     if not players:
-        st.warning("Load the slate in the Today's Slate tab first.")
-    else:
-        # Re-score (in case weights changed)
-        for p in players:
-            p["score"], p["flags"] = score_player(p, vegas_lines, injuries)
+        st.info("Upload your DK CSV in the Today's Slate tab first.")
+        st.stop()
 
-        lineup_complete = True
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.markdown("#### 💵 Cash Lineup (Triple Up)")
         for tier_num in range(1, 7):
-            tier_players = [p for p in players if p["tier"] == tier_num]
-            tier_players.sort(key=lambda x: x["score"], reverse=True)
-
+            tier_players = sorted(
+                [p for p in players if p["tier"] == tier_num],
+                key=lambda x: x["cash_score"], reverse=True
+            )
             if not tier_players:
-                lineup_complete = False
                 continue
-
-            top2 = tier_players[:2]
-            options = [p["name"] for p in top2]
-            # Add "Other..." option
-            options_display = options + ["Other (see full list)"]
-
-            col_a, col_b = st.columns([1, 2])
-            with col_a:
-                label = tier_labels.get(tier_num, f"Tier {tier_num}")
+            top2 = [p["name"] for p in tier_players[:2]]
+            options = top2 + ["Other..."]
+            choice = st.selectbox(
+                f"Tier {tier_num}",
+                options=options,
+                key=f"cash_t{tier_num}"
+            )
+            if choice == "Other...":
                 choice = st.selectbox(
-                    f"**{label}**",
-                    options=options_display,
-                    key=f"tier_pick_{tier_num}"
+                    f"Tier {tier_num} — full list",
+                    [p["name"] for p in tier_players],
+                    key=f"cash_full_t{tier_num}"
                 )
-            with col_b:
-                if choice == "Other (see full list)":
-                    all_names = [p["name"] for p in tier_players]
-                    choice = st.selectbox("Select from full tier:", all_names, key=f"tier_full_{tier_num}")
+            st.session_state.picks_cash[tier_num] = choice
 
-                # Show chosen player info
-                chosen = next((p for p in tier_players if p["name"] == choice), None)
-                if chosen:
-                    proj = chosen.get("dk_projection", 0)
-                    score = chosen.get("score", 0)
-                    flags_str = " ".join(f[0] for f in chosen.get("flags", []))
-                    st.markdown(f"**{chosen['name']}** · {chosen['team']} vs {chosen['opponent']} · Proj: {proj:.1f} · Score: {score:.0f} {flags_str}")
-                    st.session_state.picks[tier_num] = choice
+    with col_right:
+        st.markdown("#### 🏆 GPP Lineup")
+        for tier_num in range(1, 7):
+            tier_players = sorted(
+                [p for p in players if p["tier"] == tier_num],
+                key=lambda x: x["gpp_score"], reverse=True
+            )
+            if not tier_players:
+                continue
+            top2 = [p["name"] for p in tier_players[:2]]
+            options = top2 + ["Other..."]
+            choice = st.selectbox(
+                f"Tier {tier_num}",
+                options=options,
+                key=f"gpp_t{tier_num}"
+            )
+            if choice == "Other...":
+                choice = st.selectbox(
+                    f"Tier {tier_num} — full list",
+                    [p["name"] for p in tier_players],
+                    key=f"gpp_full_t{tier_num}"
+                )
+            st.session_state.picks_gpp[tier_num] = choice
+
+    st.markdown("---")
+
+    # Show lineups side by side
+    if len(st.session_state.picks_cash) == 6 and len(st.session_state.picks_gpp) == 6:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**💵 Your Cash Lineup**")
+            for t in range(1, 7):
+                name = st.session_state.picks_cash.get(t, "—")
+                st.markdown(f"**T{t}:** {name}")
+            cash_text = "\n".join([f"T{t}: {st.session_state.picks_cash.get(t,'')}" for t in range(1,7)])
+            st.code(cash_text, language=None)
+            if st.button("💾 Save Cash Lineup"):
+                if save_lineup(st.session_state.picks_cash, date.today().isoformat(), "TIER-CASH"):
+                    st.success("Cash lineup saved!")
+
+        with c2:
+            st.markdown("**🏆 Your GPP Lineup**")
+            for t in range(1, 7):
+                name = st.session_state.picks_gpp.get(t, "—")
+                st.markdown(f"**T{t}:** {name}")
+            gpp_text = "\n".join([f"T{t}: {st.session_state.picks_gpp.get(t,'')}" for t in range(1,7)])
+            st.code(gpp_text, language=None)
+            if st.button("💾 Save GPP Lineup"):
+                if save_lineup(st.session_state.picks_gpp, date.today().isoformat(), "TIER-GPP"):
+                    st.success("GPP lineup saved!")
+
+# ── Late Swap Tab ─────────────────────────────────────────────────────────────
+with tab3:
+    st.markdown("### 🔄 Late Swap Monitor")
+
+    if not players:
+        st.info("Upload your DK CSV first.")
+    else:
+        # Show game lock countdowns
+        st.markdown("#### ⏱ Game Lock Status")
+        game_locks = get_game_locks(players)
+        if game_locks:
+            for gl in game_locks:
+                mins = gl["minutes_until_lock"]
+                if mins < 0:
+                    icon = "🔒"; color = "#8892a4"; txt = "LOCKED"
+                elif mins <= 15:
+                    icon = "🔴"; color = "#f87171"; txt = f"LOCKS IN {mins} MIN"
+                elif mins <= 45:
+                    icon = "🟡"; color = "#f5a623"; txt = f"Locks in {mins} min"
+                else:
+                    h, m = divmod(mins, 60)
+                    txt = f"Locks in {h}h {m}m" if h else f"Locks in {m}m"
+                    icon = "🟢"; color = "#52b788"
+                st.markdown(f"{icon} **{gl['matchup']}** — <span style='color:{color}'>{txt}</span> ({gl['lock_time_str']})", unsafe_allow_html=True)
+        else:
+            st.info("No game times found — make sure your CSV includes Game Info column.")
 
         st.markdown("---")
+        st.markdown("#### 🚨 Pick Alerts")
 
-        # Lineup summary box
-        all_picked = all(t in st.session_state.picks for t in range(1, 7))
-        if all_picked:
-            st.markdown("### ✅ Your Final Lineup")
-            lineup_md = ""
-            for t in range(1, 7):
-                name = st.session_state.picks.get(t, "—")
-                player_data = next((p for p in players if p["name"] == name), {})
-                proj = player_data.get("dk_projection", 0)
-                lineup_md += f"**Tier {t}:** {name} _(Proj: {proj:.1f})_\n\n"
-            st.markdown(lineup_md)
+        all_picks = {}
+        all_picks.update(st.session_state.picks_cash)
+        all_picks.update(st.session_state.picks_gpp)
 
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("💾 Save Lineup to Supabase"):
-                    saved = save_lineup(st.session_state.picks, date.today().isoformat())
-                    if saved:
-                        st.success("Lineup saved!")
-                    else:
-                        st.error("Save failed — check Supabase connection.")
-            with col2:
-                # Copy-friendly format
-                lineup_text = "\n".join([f"T{t}: {st.session_state.picks.get(t, '')}" for t in range(1, 7)])
-                st.code(lineup_text, language=None)
+        if not all_picks:
+            st.info("Build your lineup in the 'My Lineup' tab first to monitor your picks.")
         else:
-            st.info("Complete all 6 tiers to see your final lineup.")
+            alerts = check_late_swap_alerts(all_picks, players, injuries)
+            if not alerts:
+                st.success("✅ All your picks look healthy — no injury alerts.")
+            else:
+                for alert in alerts:
+                    css = "alert-out" if alert["severity"] == "red" else "alert-gtd"
+                    icon = "🔴" if alert["severity"] == "red" else "🟡"
+                    st.markdown(f"""
+                    <div class="{css}">
+                    {icon} <b>Tier {alert['tier']} — {alert['player']}</b> is <b>{alert['status']}</b>
+                    {f"({alert['note']})" if alert['note'] else ""}
+                    </div>
+                    """, unsafe_allow_html=True)
 
-with tab3:
+                    # Show replacement options
+                    tier_num = alert["tier"]
+                    tier_players = [p for p in players
+                                    if p["tier"] == tier_num
+                                    and p["name"] != alert["player"]
+                                    and "OUT" not in p.get("inj_status", "").upper()]
+
+                    cash_replacements = sorted(tier_players, key=lambda x: x["cash_score"], reverse=True)[:3]
+                    gpp_replacements  = sorted(tier_players, key=lambda x: x["gpp_score"],  reverse=True)[:3]
+
+                    rc, rg = st.columns(2)
+                    with rc:
+                        st.markdown(f"**💵 Cash replacements — T{tier_num}:**")
+                        for p in cash_replacements:
+                            spread = p.get("vegas_spread")
+                            spread_str = f" · {spread:+.0f}" if spread is not None else ""
+                            st.markdown(f"• **{p['name']}** ({p['team']} vs {p['opponent']}{spread_str}) — Score: {p['cash_score']:.0f}")
+                    with rg:
+                        st.markdown(f"**🏆 GPP replacements — T{tier_num}:**")
+                        for p in gpp_replacements:
+                            spread = p.get("vegas_spread")
+                            spread_str = f" · {spread:+.0f}" if spread is not None else ""
+                            st.markdown(f"• **{p['name']}** ({p['team']} vs {p['opponent']}{spread_str}) — Score: {p['gpp_score']:.0f}")
+
+                    st.markdown("---")
+
+# ── History Tab ───────────────────────────────────────────────────────────────
+with tab4:
     st.markdown("### 📊 Lineup History")
-    history_df = load_lineup_history()
-    if history_df.empty:
-        st.info("No lineups saved yet. Build and save your first lineup in the 'My Lineup' tab.")
+    history = load_history()
+    if history.empty:
+        st.info("No lineups saved yet.")
     else:
-        st.dataframe(history_df, use_container_width=True, hide_index=True)
-        st.markdown(f"**{len(history_df)} lineups saved**")
+        st.dataframe(history, use_container_width=True, hide_index=True)
+        st.markdown(f"**{len(history)} lineups saved**")
 
-# Auto-refresh
+# ── Auto Refresh ──────────────────────────────────────────────────────────────
 if auto_refresh:
-    time.sleep(300)
+    interval_sec = refresh_interval * 60
+    # Smart refresh: faster if games locking soon
+    if game_locks:
+        min_lock = min(g["minutes_until_lock"] for g in game_locks if g["minutes_until_lock"] >= 0) if any(g["minutes_until_lock"] >= 0 for g in game_locks) else 999
+        if min_lock <= 15:
+            interval_sec = 120  # 2 min when locking soon
+        elif min_lock <= 30:
+            interval_sec = 300  # 5 min when 30 min out
+    time.sleep(interval_sec)
     st.rerun()
