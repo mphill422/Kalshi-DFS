@@ -12,8 +12,13 @@ st.set_page_config(page_title="DK Tier Optimizer", page_icon="🏀", layout="wid
 ET = pytz.timezone("America/New_York")
 
 # ── Supabase ──────────────────────────────────────────────────────────────────
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
+# Support both formats: flat SUPABASE_URL/KEY or [supabase] section
+try:
+    SUPABASE_URL = st.secrets["supabase"]["url"]
+    SUPABASE_KEY = st.secrets["supabase"]["key"]
+except:
+    SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
+    SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 
 @st.cache_resource
 def get_supabase():
