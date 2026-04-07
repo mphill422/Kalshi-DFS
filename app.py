@@ -121,7 +121,7 @@ h1,h2,h3{font-family:'Barlow Condensed',sans-serif;letter-spacing:0.04em;}
 .metric-lbl{font-size:0.68rem;color:#8892a4;text-transform:uppercase;letter-spacing:0.05em;}
 .lock-bar{background:#161b27;border:1px solid #252d3d;border-radius:6px;padding:0.4rem 0.8rem;margin-bottom:0.3rem;display:flex;justify-content:space-between;align-items:center;}
 .alert-lock{background:#2a1200;border:1px solid #f5a623;border-radius:8px;padding:0.6rem 1rem;margin-bottom:0.8rem;}
-.spike-alert{background:#1a2a0a;border:1px solid #81c784;border-radius:8px;padding:0.6rem 1rem;margin-bottom:0.5rem;}
+.spike-alert{background:#1a2a0a;border:1px solid #81c784;border-radius:8px;padding:0.6rem 1rem;margin-bottom:0.5rem;color:#d4f5d4;font-size:0.85rem;}
 div[data-testid="stSidebar"]{background:#0f1420 !important;border-right:1px solid #252d3d;}
 .stButton>button{background:#f5a623 !important;color:#0d0f14 !important;font-family:'Barlow Condensed',sans-serif !important;font-weight:700 !important;font-size:0.9rem !important;text-transform:uppercase !important;letter-spacing:0.06em !important;border:none !important;border-radius:6px !important;}
 @media(max-width:768px){
