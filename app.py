@@ -613,9 +613,17 @@ if slate_mode == "📂 Upload DK CSV":
             players = st.session_state.players
             today = date.today().strftime("%B %d")
             st.success(f"✅ {len(players)} players loaded for {today} — slate persisted from earlier upload")
-            if st.button("🔄 Upload new CSV"):
-                st.session_state.players = []
-                st.rerun()
+            col_btn, _ = st.columns([1, 3])
+            with col_btn:
+                if st.button("📂 Upload New CSV", type="primary"):
+                    st.session_state.players = []
+                    # Clear today's slate from Supabase so fresh upload is required
+                    if supabase:
+                        try:
+                            supabase.table("dfs_slate").delete().eq("slate_date", date.today().isoformat()).execute()
+                        except:
+                            pass
+                    st.rerun()
         else:
             st.markdown("""
             <div style="background:#1a1e2e;border:1px solid #f5a623;border-radius:8px;padding:0.8rem 1rem;margin-bottom:1rem">
