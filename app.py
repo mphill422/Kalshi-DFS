@@ -115,51 +115,117 @@ PARK_FACTORS = {
 
 # Team abbrev aliases (DK uses different codes sometimes)
 TEAM_ALIASES = {
-    "ATH": "OAK", "ARI": "ARI", "TBR": "TB", "TBD": "TB",
+    "ATH": "OAK", "TBR": "TB", "TBD": "TB",
     "SFG": "SF", "SDG": "SD", "SDP": "SD", "KCR": "KC",
-    "WSN": "WSH", "WAS": "WSH", "CHW": "CWS", "CHC": "CHC",
-    "LAA": "LAA", "LAD": "LAD", "NYY": "NYY", "NYM": "NYM",
+    "WSN": "WSH", "WAS": "WSH", "CHW": "CWS",
 }
 
 def get_park(team):
     t = TEAM_ALIASES.get(team, team)
     return PARK_FACTORS.get(t, {"factor": 1.0, "name": "Unknown", "type": "neutral"})
 
-# ── Pitcher ERA Dictionary (from existing MLB model) ──────────────────────────
+# ── Pitcher ERA Dictionary ─────────────────────────────────────────────────────
+# Updated with 2026 starters — today's confirmed starters marked with *
 PITCHER_ERA = {
-    # Elite
-    "Zack Wheeler": 2.95, "Corbin Burnes": 2.94, "Chris Sale": 3.01,
-    "Kodai Senga": 3.10, "Logan Webb": 3.15, "Dylan Cease": 3.20,
-    "Pablo Lopez": 3.25, "Framber Valdez": 3.28, "Spencer Strider": 3.30,
-    "Gerrit Cole": 3.35, "Shane Bieber": 3.40, "Hunter Brown": 3.42,
-    # Good
-    "Luis Castillo": 3.50, "Sonny Gray": 3.52, "Kevin Gausman": 3.55,
-    "Aaron Nola": 3.58, "Nestor Cortes": 3.60, "Carlos Rodon": 3.65,
-    "Max Fried": 3.68, "Robbie Ray": 3.70, "Marcus Stroman": 3.72,
-    "Michael Wacha": 3.75, "Taj Bradley": 3.78, "Brandon Williamson": 3.80,
-    # Average
-    "Kyle Hendricks": 4.10, "Jake Irvin": 4.15, "Edward Cabrera": 4.20,
-    "Ranger Suarez": 4.25, "Kyle Leahy": 4.30, "Nick Martinez": 4.35,
-    "George Klassen": 4.80, "Jacob Lopez": 4.85, "Erick Fedde": 4.90,
-    "Braxton Ashcraft": 5.10, "Joe Ryan": 3.95, "Foster Griffin": 4.60,
-    "Casey Mize": 4.40, "Janson Junk": 4.70, "Chris Bassitt": 3.85,
-    "Eric Lauer": 4.50, "Kyle Harrison": 3.90,
+    # ── TODAY'S CONFIRMED STARTERS (Apr 11 2026) ──
+    "Max Fried": 3.15,          # NYY ace, confirmed starter today *
+    "Logan Webb": 3.15,          # SF, confirmed starter today *
+    "Michael Wacha": 1.50,       # KC — 0.69 ERA through 2 starts, using regressed estimate *
+    "Erick Fedde": 4.09,         # CWS, confirmed today *
+    "Ranger Suarez": 4.10,       # BOS, confirmed today *
+    "Kyle Leahy": 4.60,          # STL, confirmed today *
+    "Jacob Lopez": 6.48,         # Confirmed today, allowing 3+ ER every outing *
+    "Lance McCullers": 3.20,     # HOU — 7 IP, 1 ER in debut, legit *
+    "Chris Bassitt": 3.85,       # BAL, confirmed today *
+    "Freddy Peralta": 3.40,      # NYM — tagged for 4 ER vs PIT in debut *
+    "Matthew Liberatore": 4.21,  # STL
+    "Shane Smith": 3.80,         # CWS, all-star nod last year
+    "Sandy Alcantara": 3.88,     # MIA
+    "Tarik Skubal": 2.60,        # DET — reigning Cy Young
+    "Zack Gallen": 4.20,         # ARI
+    "Garrett Crochet": 2.90,     # BOS
+    "Paul Skenes": 2.50,         # PIT — elite
+    "Chris Sale": 3.01,          # ATL
+    "Nathan Eovaldi": 3.20,      # TEX — 1.73 ERA in 2025
+    "Jacob deGrom": 3.00,        # TEX
+    "Luis Severino": 3.80,       # OAK
+    "Kevin Gausman": 3.55,       # TOR
+    "Kyle Freeland": 4.80,       # COL
+
+    # ── ELITE ──
+    "Zack Wheeler": 2.95,
+    "Corbin Burnes": 2.94,
+    "Kodai Senga": 3.10,
+    "Dylan Cease": 3.20,
+    "Pablo Lopez": 3.25,
+    "Framber Valdez": 3.28,
+    "Spencer Strider": 3.30,
+    "Gerrit Cole": 3.35,
+    "Shane Bieber": 3.40,
+    "Hunter Brown": 3.42,
+
+    # ── GOOD ──
+    "Luis Castillo": 3.50,
+    "Sonny Gray": 3.52,
+    "Aaron Nola": 3.58,
+    "Nestor Cortes": 3.60,
+    "Carlos Rodon": 3.65,
+    "Robbie Ray": 3.70,
+    "Marcus Stroman": 3.72,
+    "Michael Wacha": 3.75,       # season-long baseline (overridden by early sample above)
+    "Taj Bradley": 3.78,
+    "Brandon Williamson": 3.80,
+    "Joe Ryan": 3.95,
+    "Kyle Harrison": 3.90,
+    "George Kirby": 3.70,
+    "Bryan Woo": 3.85,
+    "Michael King": 3.90,
+    "MacKenzie Gore": 3.95,
+    "Bailey Ober": 4.00,
+
+    # ── AVERAGE ──
+    "Kyle Hendricks": 4.10,
+    "Jake Irvin": 4.15,
+    "Edward Cabrera": 4.20,
+    "Casey Mize": 4.40,
+    "Nick Martinez": 4.35,
+    "Eric Lauer": 4.50,
+    "Jameson Taillon": 3.68,
+
+    # ── BELOW AVERAGE / WEAK ──
+    "George Klassen": 4.80,
+    "Braxton Ashcraft": 5.10,
+    "Foster Griffin": 4.60,
+    "Janson Junk": 4.70,
 }
 
 def get_pitcher_era(name):
-    """Look up pitcher ERA — partial name match."""
+    """Look up pitcher ERA — partial name match, case insensitive."""
     if not name or name == "TBD":
-        return 4.50  # League average
-    name_lower = name.lower()
+        return 4.50
+    name_lower = name.lower().strip()
+    # Exact match first
+    for key, era in PITCHER_ERA.items():
+        if name_lower == key.lower():
+            return era
+    # Partial match
     for key, era in PITCHER_ERA.items():
         if name_lower in key.lower() or key.lower() in name_lower:
             return era
+    # Last name only match
+    name_parts = name_lower.split()
+    if name_parts:
+        last = name_parts[-1]
+        for key, era in PITCHER_ERA.items():
+            if last in key.lower().split():
+                return era
     return 4.50
 
 def pitcher_grade(era):
     """Return letter grade and color for pitcher ERA."""
-    if era <= 3.00: return "ACE", "#f5a623"
-    if era <= 3.50: return "A", "#52b788"
+    if era <= 2.75: return "ACE+", "#f5a623"
+    if era <= 3.20: return "ACE", "#f5a623"
+    if era <= 3.60: return "A", "#52b788"
     if era <= 4.00: return "B+", "#4fc3f7"
     if era <= 4.50: return "B", "#8892a4"
     if era <= 5.00: return "C", "#ffb74d"
@@ -170,9 +236,20 @@ def pitcher_grade(era):
 def fetch_vegas_lines():
     lines = {}
     try:
-        api_key = st.secrets.get("ODDS_API_KEY", "")
+        # FIX: Try both nested and flat secret formats
+        api_key = ""
+        try:
+            api_key = st.secrets["odds"]["api_key"]
+        except:
+            pass
+        if not api_key:
+            try:
+                api_key = st.secrets["ODDS_API_KEY"]
+            except:
+                pass
         if not api_key:
             return lines
+
         resp = requests.get(
             "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/",
             params={"apiKey": api_key, "regions": "us", "markets": "spreads,totals", "oddsFormat": "american"},
@@ -219,13 +296,6 @@ def fetch_mlb_injuries():
 
 # ── CSV Parser ────────────────────────────────────────────────────────────────
 def parse_mlb_csv(uploaded_file):
-    """
-    Parse DraftKings MLB tier contest CSV.
-    MLB CSV columns: Position, Name+ID, Name, ID, Roster Position,
-    Salary, Game Info, TeamAbbrev, AvgPointsPerGame
-    Positions: P, C, 1B, 2B, 3B, SS, OF
-    Tier contests: Roster Position = T1-T6
-    """
     try:
         df = pd.read_csv(uploaded_file)
         players = []
@@ -252,6 +322,7 @@ def parse_mlb_csv(uploaded_file):
 
             opponent = ""
             game_time_str = ""
+            is_home = False
             if "@" in game_info:
                 parts = game_info.split(" ")
                 matchup = parts[0] if parts else ""
@@ -260,30 +331,17 @@ def parse_mlb_csv(uploaded_file):
                     away_t, home_t = teams[0].strip(), teams[1].strip()
                     opponent = home_t if team == away_t else away_t
                     is_home = team == home_t
-                else:
-                    is_home = False
                 try:
                     game_time_str = " ".join(parts[1:3]) if len(parts) >= 3 else ""
                     game_time_str = game_time_str.replace(" ET", "").strip()
                 except: pass
-            else:
-                is_home = False
 
-            # Determine home team for park factor
-            home_team = opponent if not is_home else team
+            home_team = team if is_home else opponent
 
             players.append({
-                "name": name,
-                "team": team,
-                "position": position,
-                "tier": tier,
-                "dk_projection": avg_pts,
-                "salary": salary,
-                "opponent": opponent,
-                "home_team": home_team,
-                "game_time_str": game_time_str,
-                "is_home": is_home,
-                # Filled by scoring
+                "name": name, "team": team, "position": position, "tier": tier,
+                "dk_projection": avg_pts, "salary": salary, "opponent": opponent,
+                "home_team": home_team, "game_time_str": game_time_str, "is_home": is_home,
                 "inj_status": "", "inj_note": "",
                 "vegas_spread": None, "vegas_total": None,
                 "opp_pitcher": "", "opp_pitcher_era": 4.50,
@@ -300,7 +358,7 @@ def parse_mlb_csv(uploaded_file):
         st.error(f"CSV parse error: {e}")
         return []
 
-# ── Injury Lookup ─────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def get_inj(name, injuries):
     nl = name.lower()
     if nl in injuries: return injuries[nl]
@@ -309,224 +367,141 @@ def get_inj(name, injuries):
     return {"status": "", "note": ""}
 
 def get_vegas(team, vegas_lines):
-    aliases = TEAM_ALIASES.get(team, team)
-    for t in [team, aliases]:
-        if t in vegas_lines: return vegas_lines[t]
-    # Try partial match on team name
+    t = TEAM_ALIASES.get(team, team)
+    for key in [team, t]:
+        if key in vegas_lines: return vegas_lines[key]
     for k, v in vegas_lines.items():
         if team.lower() in k.lower() or k.lower() in team.lower():
             return v
     return {"spread": None, "total": None}
 
-# ── Implied Team Total ────────────────────────────────────────────────────────
 def implied_total(spread, total):
-    """
-    Calculate implied team run total from spread and O/U.
-    Formula: implied = (total / 2) - (spread / 2)
-    e.g. O/U 9, spread -1.5 -> implied = 4.5 + 0.75 = 5.25 runs
-    """
-    if spread is None or total is None:
-        return None
+    if spread is None or total is None: return None
     return round((total / 2) - (spread / 2), 2)
 
-# ── Weather Fetch (from NWS API) ──────────────────────────────────────────────
-# MLB stadium coordinates for weather lookup
+# ── Weather ───────────────────────────────────────────────────────────────────
 STADIUM_COORDS = {
-    "NYY": (40.8296, -73.9262, "Bronx, NY"),
-    "NYM": (40.7571, -73.8458, "Queens, NY"),
-    "BOS": (42.3467, -71.0972, "Boston, MA"),
-    "PHI": (39.9061, -75.1665, "Philadelphia, PA"),
-    "ATL": (33.8911, -84.4681, "Cumberland, GA"),
-    "MIA": (25.7781, -80.2197, "Miami, FL"),
-    "WSH": (38.8730, -77.0074, "Washington, DC"),
-    "PIT": (40.4469, -80.0057, "Pittsburgh, PA"),
-    "CHC": (41.9484, -87.6553, "Chicago, IL"),
-    "CWS": (41.8299, -87.6338, "Chicago, IL"),
-    "MIL": (43.0283, -87.9712, "Milwaukee, WI"),
-    "STL": (38.6226, -90.1928, "St. Louis, MO"),
-    "CIN": (39.0979, -84.5082, "Cincinnati, OH"),
-    "CLE": (41.4962, -81.6852, "Cleveland, OH"),
-    "DET": (42.3390, -83.0485, "Detroit, MI"),
-    "MIN": (44.9817, -93.2776, "Minneapolis, MN"),
-    "KC":  (39.0517, -94.4803, "Kansas City, MO"),
-    "TEX": (32.7512, -97.0832, "Arlington, TX"),
-    "HOU": (29.7573, -95.3555, "Houston, TX"),
-    "LAA": (33.8003, -117.8827, "Anaheim, CA"),
-    "LAD": (34.0739, -118.2400, "Los Angeles, CA"),
-    "SF":  (37.7786, -122.3893, "San Francisco, CA"),
-    "SD":  (32.7076, -117.1570, "San Diego, CA"),
-    "COL": (39.7559, -104.9942, "Denver, CO"),
-    "ARI": (33.4453, -112.0667, "Phoenix, AZ"),
-    "SEA": (47.5914, -122.3326, "Seattle, WA"),
-    "OAK": (37.7516, -122.2005, "Oakland, CA"),
-    "ATH": (37.7516, -122.2005, "Oakland, CA"),
-    "TB":  (27.7683, -82.6534, "St. Petersburg, FL"),
-    "BAL": (39.2838, -76.6218, "Baltimore, MD"),
+    "NYY": (40.8296, -73.9262, "Bronx, NY"), "NYM": (40.7571, -73.8458, "Queens, NY"),
+    "BOS": (42.3467, -71.0972, "Boston, MA"), "PHI": (39.9061, -75.1665, "Philadelphia, PA"),
+    "ATL": (33.8911, -84.4681, "Cumberland, GA"), "MIA": (25.7781, -80.2197, "Miami, FL"),
+    "WSH": (38.8730, -77.0074, "Washington, DC"), "PIT": (40.4469, -80.0057, "Pittsburgh, PA"),
+    "CHC": (41.9484, -87.6553, "Chicago, IL"), "CWS": (41.8299, -87.6338, "Chicago, IL"),
+    "MIL": (43.0283, -87.9712, "Milwaukee, WI"), "STL": (38.6226, -90.1928, "St. Louis, MO"),
+    "CIN": (39.0979, -84.5082, "Cincinnati, OH"), "CLE": (41.4962, -81.6852, "Cleveland, OH"),
+    "DET": (42.3390, -83.0485, "Detroit, MI"), "MIN": (44.9817, -93.2776, "Minneapolis, MN"),
+    "KC":  (39.0517, -94.4803, "Kansas City, MO"), "TEX": (32.7512, -97.0832, "Arlington, TX"),
+    "HOU": (29.7573, -95.3555, "Houston, TX"), "LAA": (33.8003, -117.8827, "Anaheim, CA"),
+    "LAD": (34.0739, -118.2400, "Los Angeles, CA"), "SF":  (37.7786, -122.3893, "San Francisco, CA"),
+    "SD":  (32.7076, -117.1570, "San Diego, CA"), "COL": (39.7559, -104.9942, "Denver, CO"),
+    "ARI": (33.4453, -112.0667, "Phoenix, AZ"), "SEA": (47.5914, -122.3326, "Seattle, WA"),
+    "OAK": (37.7516, -122.2005, "Oakland, CA"), "ATH": (37.7516, -122.2005, "Oakland, CA"),
+    "TB":  (27.7683, -82.6534, "St. Petersburg, FL"), "BAL": (39.2838, -76.6218, "Baltimore, MD"),
     "TOR": (43.6414, -79.3894, "Toronto, ON"),
 }
 
+# Domed/retractable stadiums — weather irrelevant
+DOMED_STADIUMS = {"HOU", "MIA", "TB", "TOR", "ARI", "MIL", "SEA", "MIN", "ATH", "OAK"}
+
 @st.cache_data(ttl=1800)
 def fetch_weather_for_game(home_team):
-    """Fetch current weather for a stadium using NWS API."""
-    coords = STADIUM_COORDS.get(home_team)
-    if not coords:
+    if home_team in DOMED_STADIUMS:
         return None
+    coords = STADIUM_COORDS.get(home_team)
+    if not coords: return None
     lat, lon, city = coords
     try:
-        # NWS points endpoint
         points_url = f"https://api.weather.gov/points/{lat},{lon}"
         resp = requests.get(points_url, headers={"User-Agent": "DFSTierOptimizer/1.0"}, timeout=10)
-        if resp.status_code != 200:
-            return None
+        if resp.status_code != 200: return None
         data = resp.json()
         forecast_url = data["properties"]["forecastHourly"]
         resp2 = requests.get(forecast_url, headers={"User-Agent": "DFSTierOptimizer/1.0"}, timeout=10)
-        if resp2.status_code != 200:
-            return None
+        if resp2.status_code != 200: return None
         periods = resp2.json()["properties"]["periods"]
-        if not periods:
-            return None
+        if not periods: return None
         p = periods[0]
         return {
-            "temp": p.get("temperature", 0),
-            "wind_speed": p.get("windSpeed", "0 mph"),
-            "wind_dir": p.get("windDirection", ""),
-            "description": p.get("shortForecast", ""),
+            "temp": p.get("temperature", 0), "wind_speed": p.get("windSpeed", "0 mph"),
+            "wind_dir": p.get("windDirection", ""), "description": p.get("shortForecast", ""),
             "city": city,
         }
-    except:
-        return None
+    except: return None
 
 def weather_impact(weather, park_name):
-    """
-    Assess weather impact on scoring.
-    Returns (score_adjustment, reason)
-    """
-    if not weather:
-        return 0, ""
-    
+    if not weather: return 0, ""
     temp = weather.get("temp", 72)
     wind_str = weather.get("wind_speed", "0 mph")
     wind_dir = weather.get("wind_dir", "")
-    
-    try:
-        wind_mph = int(wind_str.split(" ")[0])
-    except:
-        wind_mph = 0
-    
-    adj = 0
-    reasons = []
-    
-    # Temperature
-    if temp >= 85:
-        adj += 4; reasons.append(f"Hot {temp}°F — ball carries")
-    elif temp >= 75:
-        adj += 2
-    elif temp <= 50:
-        adj -= 4; reasons.append(f"Cold {temp}°F — ball dies")
-    elif temp <= 60:
-        adj -= 2; reasons.append(f"Cool {temp}°F")
-    
-    # Wind — out = hitter boost, in = pitcher boost
+    try: wind_mph = int(wind_str.split(" ")[0])
+    except: wind_mph = 0
+    adj = 0; reasons = []
+    if temp >= 85: adj += 4; reasons.append(f"Hot {temp}°F — ball carries")
+    elif temp >= 75: adj += 2
+    elif temp <= 50: adj -= 4; reasons.append(f"Cold {temp}°F — ball dies")
+    elif temp <= 60: adj -= 2; reasons.append(f"Cool {temp}°F")
     if wind_mph >= 15:
         out_dirs = ["Out", "S", "SE", "SW", "E", "W"]
-        in_dirs = ["In", "N", "NE", "NW"]
-        if any(d in wind_dir for d in out_dirs):
-            adj += 6; reasons.append(f"Wind out {wind_mph}mph 🔥")
-        elif any(d in wind_dir for d in in_dirs):
-            adj -= 5; reasons.append(f"Wind in {wind_mph}mph ❄️")
-        else:
-            adj += 2; reasons.append(f"Wind {wind_mph}mph")
+        in_dirs  = ["In", "N", "NE", "NW"]
+        if any(d in wind_dir for d in out_dirs): adj += 6; reasons.append(f"Wind out {wind_mph}mph 🔥")
+        elif any(d in wind_dir for d in in_dirs): adj -= 5; reasons.append(f"Wind in {wind_mph}mph ❄️")
+        else: adj += 2; reasons.append(f"Wind {wind_mph}mph")
     elif wind_mph >= 10:
         adj += 2 if "S" in wind_dir or "E" in wind_dir else -1
-    
     return adj, " · ".join(reasons)
 
 # ── Stack Detection ───────────────────────────────────────────────────────────
 def detect_stacks(players, vegas_lines):
-    """
-    Identify best stacking opportunities by team.
-    Returns dict of team -> stack score.
-    """
     teams = set(p["team"] for p in players if not p["is_pitcher"])
     stack_scores = {}
-
     for team in teams:
         team_players = [p for p in players if p["team"] == team and not p["is_pitcher"]]
-        if len(team_players) < 3:
-            continue
-
-        # Get opposing pitcher
-        opp = team_players[0]["opponent"] if team_players else ""
+        if len(team_players) < 2: continue
         opp_pitcher_era = team_players[0].get("opp_pitcher_era", 4.50) if team_players else 4.50
-
-        # Vegas
+        opp = team_players[0]["opponent"] if team_players else ""
         veg = get_vegas(team, vegas_lines)
-        total = veg.get("total", 8.5)
-        spread = veg.get("spread")
-
-        # Park factor
+        total = veg.get("total", 8.5); spread = veg.get("spread")
         home = team_players[0].get("home_team", team) if team_players else team
         park = get_park(home)
+        score = 50.0; reasons = []
 
-        score = 50.0
-        reasons = []
+        if opp_pitcher_era >= 6.0: score += 25; reasons.append(f"Weak SP (ERA {opp_pitcher_era:.2f})")
+        elif opp_pitcher_era >= 5.0: score += 20; reasons.append(f"Weak SP (ERA {opp_pitcher_era:.2f})")
+        elif opp_pitcher_era >= 4.5: score += 12; reasons.append(f"Below avg SP (ERA {opp_pitcher_era:.2f})")
+        elif opp_pitcher_era >= 4.0: score += 6; reasons.append(f"Average SP (ERA {opp_pitcher_era:.2f})")
+        elif opp_pitcher_era <= 2.75: score -= 20; reasons.append(f"Ace+ pitcher — avoid stack")
+        elif opp_pitcher_era <= 3.20: score -= 15; reasons.append(f"Ace pitcher — avoid stack")
+        elif opp_pitcher_era <= 3.60: score -= 8; reasons.append(f"Good SP — tough matchup")
 
-        # Opposing pitcher quality (higher ERA = better for batters)
-        if opp_pitcher_era >= 5.0:
-            score += 20; reasons.append(f"Weak SP (ERA {opp_pitcher_era:.2f})")
-        elif opp_pitcher_era >= 4.5:
-            score += 12; reasons.append(f"Below avg SP (ERA {opp_pitcher_era:.2f})")
-        elif opp_pitcher_era >= 4.0:
-            score += 6; reasons.append(f"Average SP (ERA {opp_pitcher_era:.2f})")
-        elif opp_pitcher_era <= 3.0:
-            score -= 15; reasons.append(f"Ace pitcher (ERA {opp_pitcher_era:.2f}) — avoid stack")
-        elif opp_pitcher_era <= 3.5:
-            score -= 8; reasons.append(f"Good SP (ERA {opp_pitcher_era:.2f})")
-
-        # Implied team total (most important factor)
         imp = implied_total(spread, total) if total else None
         if imp is not None:
-            if imp >= 5.5: score += 20; reasons.append(f"Implied {imp:.1f} runs — elite stack spot")
+            if imp >= 5.5: score += 20; reasons.append(f"Implied {imp:.1f} runs — elite spot")
             elif imp >= 4.5: score += 12; reasons.append(f"Implied {imp:.1f} runs")
             elif imp >= 4.0: score += 5
             elif imp <= 3.0: score -= 15; reasons.append(f"Implied {imp:.1f} runs — avoid")
             elif imp <= 3.5: score -= 8; reasons.append(f"Low implied {imp:.1f} runs")
         elif total:
             if total >= 10: score += 15; reasons.append(f"High O/U {total}")
-            elif total >= 9: score += 10; reasons.append(f"O/U {total}")
-            elif total >= 8: score += 5
+            elif total >= 9: score += 10
             elif total <= 7: score -= 10; reasons.append(f"Low O/U {total}")
 
-        # Spread
         if spread is not None:
             if spread <= -1.5: score += 8; reasons.append("Favored")
             elif spread >= 1.5: score -= 5; reasons.append("Underdog")
 
-        # Park factor
         pf = park["factor"]
         if pf >= 1.10: score += 12; reasons.append(f"Hitter's park ({park['name']})")
         elif pf >= 1.05: score += 7; reasons.append(f"Slight hitter's park")
         elif pf <= 0.95: score -= 8; reasons.append(f"Pitcher's park ({park['name']})")
 
         stack_scores[team] = {
-            "score": round(score, 1),
-            "reasons": reasons[:3],
-            "opp": opp,
-            "opp_era": opp_pitcher_era,
-            "total": total,
-            "spread": spread,
-            "park": park,
-            "player_count": len(team_players)
+            "score": round(score, 1), "reasons": reasons[:3], "opp": opp,
+            "opp_era": opp_pitcher_era, "total": total, "spread": spread,
+            "park": park, "player_count": len(team_players)
         }
-
     return dict(sorted(stack_scores.items(), key=lambda x: x[1]["score"], reverse=True))
 
 # ── Scoring Engine ────────────────────────────────────────────────────────────
 def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=set()):
-    """Score each player for cash and GPP — MLB specific."""
-
-    # Set ownership proxy by projection rank within tier
     for tier_num in range(1, 7):
         tier_ps = [p for p in players if p["tier"] == tier_num]
         if not tier_ps: continue
@@ -535,7 +510,6 @@ def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=s
             p["ownership_proxy"] = p["dk_projection"] / max_proj
 
     for p in players:
-        # Manual overrides
         if p["name"] in manual_out:
             p["inj_status"] = "OUT"; p["inj_note"] = "Manually marked OUT"
         elif p["name"] in manual_gtd:
@@ -545,95 +519,78 @@ def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=s
             p["inj_status"] = inj.get("status", "")
             p["inj_note"] = inj.get("note", "")
 
-        # Vegas
         veg = get_vegas(p["team"], vegas_lines)
         p["vegas_spread"] = veg.get("spread")
-        p["vegas_total"] = veg.get("total")
+        p["vegas_total"]  = veg.get("total")
 
-        # Park factor
         park = get_park(p["home_team"])
         p["park_factor"] = park["factor"]
-        p["park_name"] = park["name"]
+        p["park_name"]   = park["name"]
 
         status = p["inj_status"].upper()
         if "OUT" in status:
             p["cash_score"] = 0; p["gpp_score"] = 0
             p["cash_reasons"] = ["OUT — do not play"]
-            p["gpp_reasons"] = ["OUT — do not play"]
+            p["gpp_reasons"]  = ["OUT — do not play"]
             continue
 
-        proj = p["dk_projection"]
-        spread = p["vegas_spread"]
-        total = p["vegas_total"]
-        pf = p["park_factor"]
-        own = p["ownership_proxy"]
-        is_p = p["is_pitcher"]
+        proj = p["dk_projection"]; spread = p["vegas_spread"]; total = p["vegas_total"]
+        pf = p["park_factor"]; own = p["ownership_proxy"]; is_p = p["is_pitcher"]
+        cash = 50.0; gpp = 50.0; cr = []; gr = []
 
-        cash = 50.0; gpp = 50.0
-        cr = []; gr = []
-
-        # GTD
         if "GTD" in status or "QUESTIONABLE" in status:
             cash -= 20; gpp -= 8
             cr.append("GTD — risky for cash")
             gr.append("GTD — low ownership if confirmed")
 
-        # ── PITCHER scoring ───────────────────────────────────────────────────
+        # ── PITCHER ──────────────────────────────────────────────────────────
         if is_p:
             era = get_pitcher_era(p["name"])
-            p["opp_pitcher_era"] = era  # self ERA for pitchers
-            grade, _ = pitcher_grade(era)
+            p["opp_pitcher_era"] = era
+            if era <= 2.75: cash += 30; gpp += 25; cr.append(f"Ace+ — ERA {era:.2f}")
+            elif era <= 3.20: cash += 25; gpp += 20; cr.append(f"Ace — ERA {era:.2f}")
+            elif era <= 3.60: cash += 18; gpp += 15; cr.append(f"Elite SP — ERA {era:.2f}")
+            elif era <= 4.00: cash += 10; gpp += 8; cr.append(f"Good SP — ERA {era:.2f}")
+            elif era >= 6.00: cash -= 20; gpp -= 15; cr.append(f"Struggling SP — ERA {era:.2f} — fade")
+            elif era >= 5.00: cash -= 15; gpp -= 10; cr.append(f"Weak SP — ERA {era:.2f} — fade")
+            elif era >= 4.50: cash -= 8; gpp -= 5; cr.append(f"Below avg SP — ERA {era:.2f}")
 
-            # Pitcher quality
-            if era <= 3.0: cash += 25; gpp += 20; cr.append(f"Ace — ERA {era:.2f}")
-            elif era <= 3.5: cash += 18; gpp += 15; cr.append(f"Elite SP — ERA {era:.2f}")
-            elif era <= 4.0: cash += 10; gpp += 8; cr.append(f"Good SP — ERA {era:.2f}")
-            elif era >= 5.0: cash -= 15; gpp -= 10; cr.append(f"Weak SP — ERA {era:.2f} — fade")
-            elif era >= 4.5: cash -= 8; gpp -= 5; cr.append(f"Below avg SP — ERA {era:.2f}")
-
-            # Pitching park — inverse (pitcher's park = good for pitcher)
             if pf <= 0.95: cash += 8; gpp += 6; cr.append(f"Pitcher's park ✅")
             elif pf >= 1.10: cash -= 10; gpp -= 8; cr.append(f"Hitter's park ⚠️")
 
-            # Vegas total for pitchers — low total = good
             if total:
                 if total <= 7.5: cash += 10; gpp += 8; cr.append(f"Low O/U {total} — pitcher spot")
                 elif total >= 10: cash -= 12; gpp -= 8; cr.append(f"High O/U {total} — risky for SP")
 
-            # Projection
             cash += min(proj * 0.8, 20); gpp += min(proj * 0.6, 15)
 
-        # ── BATTER scoring ────────────────────────────────────────────────────
+        # ── BATTER ───────────────────────────────────────────────────────────
         else:
-            # Opposing pitcher ERA (higher = better for batter)
             opp_era = p.get("opp_pitcher_era", 4.50)
-            if opp_era >= 5.0: cash += 18; gpp += 15; cr.append(f"Weak opp SP (ERA {opp_era:.2f})")
-            elif opp_era >= 4.5: cash += 12; gpp += 10; cr.append(f"Below avg SP (ERA {opp_era:.2f})")
-            elif opp_era >= 4.0: cash += 6; gpp += 5
-            elif opp_era <= 3.0: cash -= 15; gpp -= 10; cr.append(f"Facing ace (ERA {opp_era:.2f})")
-            elif opp_era <= 3.5: cash -= 8; gpp -= 5; cr.append(f"Tough SP (ERA {opp_era:.2f})")
+            if opp_era >= 6.00: cash += 25; gpp += 20; cr.append(f"Struggling opp SP (ERA {opp_era:.2f}) 🔥")
+            elif opp_era >= 5.00: cash += 18; gpp += 15; cr.append(f"Weak opp SP (ERA {opp_era:.2f})")
+            elif opp_era >= 4.50: cash += 12; gpp += 10; cr.append(f"Below avg SP (ERA {opp_era:.2f})")
+            elif opp_era >= 4.00: cash += 6; gpp += 5
+            elif opp_era <= 2.75: cash -= 20; gpp -= 15; cr.append(f"Facing ace+ (ERA {opp_era:.2f}) ⚠️")
+            elif opp_era <= 3.20: cash -= 15; gpp -= 10; cr.append(f"Facing ace (ERA {opp_era:.2f})")
+            elif opp_era <= 3.60: cash -= 8; gpp -= 5; cr.append(f"Tough SP (ERA {opp_era:.2f})")
 
-            # Park factor for batters
             if pf >= 1.15: cash += 12; gpp += 10; cr.append(f"Extreme hitter's park 🔥")
             elif pf >= 1.05: cash += 7; gpp += 6; cr.append(f"Hitter's park ({p['park_name']})")
             elif pf <= 0.95: cash -= 8; gpp -= 5; cr.append(f"Pitcher's park ({p['park_name']})")
 
-            # Vegas total
             if total:
                 if total >= 10: cash += 10; gpp += 8; cr.append(f"High O/U {total} — run environment")
                 elif total >= 9: cash += 6; gpp += 5
                 elif total <= 7: cash -= 8; gpp -= 5; cr.append(f"Low O/U {total} — slow game")
 
-            # Spread
             if spread is not None:
                 if spread <= -1.5: cash += 6; gpp += 3; cr.append("Team favored")
                 elif spread >= 1.5: cash -= 5; gpp -= 3; cr.append("Team underdog")
 
-            # Projection
             proj_bonus = min((proj - 5) * 1.2, 25)
             cash += proj_bonus; gpp += proj_bonus * 0.7
 
-            # GPP ownership lever
             if own < 0.4: gpp += 14; gr.append("Low ownership — GPP leverage")
             elif own < 0.6: gpp += 5
             else: gpp -= 6; gr.append("High chalk — fade has GPP merit")
@@ -646,19 +603,11 @@ def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=s
     return players
 
 def assign_opp_pitchers(players):
-    """
-    Try to assign opposing pitcher ERA to each batter.
-    Pitchers in the pool face the opposing team's batters.
-    """
-    # Build pitcher -> team map from player pool
     pitcher_map = {}
     for p in players:
         if p["is_pitcher"]:
             era = get_pitcher_era(p["name"])
-            # This pitcher pitches for their team against opponent
             pitcher_map[p["team"]] = {"name": p["name"], "era": era}
-
-    # Assign to batters
     for p in players:
         if not p["is_pitcher"]:
             opp = p["opponent"]
@@ -667,10 +616,8 @@ def assign_opp_pitchers(players):
                 p["opp_pitcher_era"] = pitcher_map[opp]["era"]
             else:
                 p["opp_pitcher_era"] = 4.50
-
     return players
 
-# ── Ownership Estimates ───────────────────────────────────────────────────────
 def estimate_ownership(players):
     for tier_num in range(1, 7):
         tier_ps = [p for p in players if p["tier"] == tier_num
@@ -680,18 +627,15 @@ def estimate_ownership(players):
         base_owns = [45, 28, 15, 7, 3, 2]
         for idx, p in enumerate(tier_ps):
             base = base_owns[idx] if idx < len(base_owns) else 1
-            pf = p.get("park_factor", 1.0)
-            era = p.get("opp_pitcher_era", 4.50)
+            pf = p.get("park_factor", 1.0); era = p.get("opp_pitcher_era", 4.50)
             if not p["is_pitcher"]:
                 if pf >= 1.10: base += 5
                 if era >= 4.5: base += 5
             p["ownership_pct"] = min(max(base, 1), 70)
     return players
 
-# ── Game Locks ────────────────────────────────────────────────────────────────
 def get_game_locks(players):
-    now_et = datetime.now(ET)
-    games = {}
+    now_et = datetime.now(ET); games = {}
     for p in players:
         opp = p.get("opponent", ""); team = p.get("team", ""); gt = p.get("game_time_str", "")
         if not opp or not gt: continue
@@ -708,20 +652,16 @@ def get_game_locks(players):
             except: pass
     return sorted(games.values(), key=lambda x: x.get("minutes_until_lock", 9999))
 
-# ── Supabase Slate Save/Load ──────────────────────────────────────────────────
+# ── Supabase ──────────────────────────────────────────────────────────────────
 def save_slate(players):
     if not supabase: return False
     try:
         today = date.today().isoformat()
         supabase.table("dfs_slate").delete().eq("slate_date", today).execute()
-        records = []
-        for p in players:
-            records.append({
-                "slate_date": today, "name": p["name"], "team": p["team"],
-                "position": p["position"], "tier": p["tier"],
-                "dk_projection": p["dk_projection"], "opponent": p["opponent"],
-                "game_time_str": p.get("game_time_str", ""),
-            })
+        records = [{"slate_date": today, "name": p["name"], "team": p["team"],
+                    "position": p["position"], "tier": p["tier"],
+                    "dk_projection": p["dk_projection"], "opponent": p["opponent"],
+                    "game_time_str": p.get("game_time_str", "")} for p in players]
         for i in range(0, len(records), 10):
             supabase.table("dfs_slate").insert(records[i:i+10]).execute()
         return True
@@ -735,20 +675,17 @@ def load_slate():
         if not resp.data: return []
         players = []
         for row in resp.data:
-            pos = row.get("position", "")
-            game_info = row.get("game_time_str", "")
-            opp = row.get("opponent", "")
-            team = row.get("team", "")
+            pos = row.get("position", ""); opp = row.get("opponent", ""); team = row.get("team", "")
             players.append({
                 "name": row["name"], "team": team, "position": pos,
                 "tier": row["tier"], "dk_projection": float(row.get("dk_projection", 0) or 0),
                 "salary": 0, "opponent": opp, "home_team": opp,
-                "game_time_str": game_info, "is_home": False,
+                "game_time_str": row.get("game_time_str", ""), "is_home": False,
                 "inj_status": "", "inj_note": "", "vegas_spread": None, "vegas_total": None,
-                "opp_pitcher": "", "opp_pitcher_era": 4.50,
-                "park_factor": 1.0, "park_name": "", "ownership_pct": None, "ownership_proxy": 0.5,
-                "cash_score": 0, "gpp_score": 0, "cash_reasons": [], "gpp_reasons": [],
-                "spike_boost": 0, "spike_reason": "", "is_pitcher": pos == "P", "stack_team": "",
+                "opp_pitcher": "", "opp_pitcher_era": 4.50, "park_factor": 1.0, "park_name": "",
+                "ownership_pct": None, "ownership_proxy": 0.5, "cash_score": 0, "gpp_score": 0,
+                "cash_reasons": [], "gpp_reasons": [], "spike_boost": 0, "spike_reason": "",
+                "is_pitcher": pos == "P", "stack_team": "",
             })
         return players
     except: return []
@@ -757,28 +694,38 @@ def load_slate():
 def b(text, color): return f'<span class="badge b-{color}">{text}</span>'
 
 def badges(p):
+    # FIX: was missing return html — now always returns
     html = ""
     status = p.get("inj_status", "").upper()
-    if "OUT" in status: html += b("OUT", "red")
-    elif "GTD" in status or "QUESTIONABLE" in status: html += b("GTD", "yellow")
+    if "OUT" in status:
+        html += b("OUT", "red")
+    elif "GTD" in status or "QUESTIONABLE" in status:
+        html += b("GTD", "yellow")
     pf = p.get("park_factor", 1.0)
-    if pf >= 1.10: html += b(f"HITTER'S PARK", "orange")
-    elif pf <= 0.95: html += b("PITCHER'S PARK", "teal")
+    if pf >= 1.10:
+        html += b("HITTER'S PARK", "orange")
+    elif pf <= 0.95:
+        html += b("PITCHER'S PARK", "teal")
     total = p.get("vegas_total")
     if total:
         if total >= 10: html += b(f"O/U {total}", "blue")
         elif total <= 7: html += b(f"O/U {total}", "teal")
+        else: html += b(f"O/U {total}", "purple")
     if p.get("is_pitcher"):
         era = get_pitcher_era(p["name"])
         grade, _ = pitcher_grade(era)
         html += b(f"ERA {era:.2f} {grade}", "orange")
     else:
         opp_era = p.get("opp_pitcher_era", 4.50)
-        if opp_era >= 4.5: html += b(f"OPP ERA {opp_era:.2f}", "green")
-        elif opp_era <= 3.5: html += b(f"OPP ERA {opp_era:.2f}", "red")
+        if opp_era >= 6.00:   html += b(f"OPP ERA {opp_era:.2f}", "green")
+        elif opp_era >= 4.50: html += b(f"OPP ERA {opp_era:.2f}", "green")
+        elif opp_era <= 3.20: html += b(f"OPP ERA {opp_era:.2f}", "red")
+        elif opp_era <= 3.60: html += b(f"OPP ERA {opp_era:.2f}", "yellow")
     own = p.get("ownership_pct")
-    if own: color = "red" if own >= 35 else ("yellow" if own >= 20 else "green")
-    return html
+    if own:
+        color = "red" if own >= 35 else ("yellow" if own >= 20 else "green")
+        html += b(f"~{own:.0f}% OWN", color)
+    return html  # ← THE FIX
 
 def own_html(p):
     own = p.get("ownership_pct")
@@ -787,34 +734,22 @@ def own_html(p):
     return f'<span class="pmeta">Est. ownership: <b style="color:{color}">{own:.0f}%</b></span>'
 
 def make_card(p, mode="cash"):
-    proj = p["dk_projection"]
-    spread = p.get("vegas_spread"); total = p.get("vegas_total")
+    proj = p["dk_projection"]; spread = p.get("vegas_spread"); total = p.get("vegas_total")
     vegas_str = ""
     if spread is not None: vegas_str = f"Run line {spread:+.1f}"
     if total: vegas_str += f" · O/U {total}"
-    score_key = "cash_score" if mode == "cash" else "gpp_score"
-    reasons_key = "cash_reasons" if mode == "cash" else "gpp_reasons"
-    score = int(p.get(score_key, 0))
-    reasons = p.get(reasons_key, [])
+    score = int(p.get("cash_score" if mode == "cash" else "gpp_score", 0))
+    reasons = p.get("cash_reasons" if mode == "cash" else "gpp_reasons", [])
     reasons_html = "".join(f"<div class='preason'>• {r}</div>" for r in reasons[:3])
     b_html = badges(p)
     o_html = own_html(p)
-    park = p.get("park_name", "")
-    opp_p = p.get("opp_pitcher", "")
+    park = p.get("park_name", ""); opp_p = p.get("opp_pitcher", "")
     opp_line = f"vs {opp_p}" if opp_p and not p["is_pitcher"] else ""
-    sal = p.get("salary", 0)
-    sal_str = f"${sal:,.0f}" if sal else ""
+    sal = p.get("salary", 0); sal_str = f"${sal:,.0f}" if sal else ""
 
-    if p["is_pitcher"]:
-        css = "pick-pitcher"
-        sc_bg = "#1a1a0a"; sc_col = "#f5a623"
-    elif mode == "cash":
-        css = "pick-cash"
-        sc_bg = "#0a2a0a"; sc_col = "#52b788"
-    else:
-        css = "pick-gpp"
-        sc_bg = "#2d1040"; sc_col = "#ce93d8"
-
+    if p["is_pitcher"]: css = "pick-pitcher"; sc_bg = "#1a1a0a"; sc_col = "#f5a623"
+    elif mode == "cash": css = "pick-cash"; sc_bg = "#0a2a0a"; sc_col = "#52b788"
+    else: css = "pick-gpp"; sc_bg = "#2d1040"; sc_col = "#ce93d8"
     if "OUT" in p.get("inj_status", "").upper(): css = "pick-out"
 
     return (
@@ -861,7 +796,13 @@ with st.sidebar:
     show_all = st.toggle("Show All Players Per Tier", value=False)
     st.markdown("---")
     st.markdown("### 🔑 API Status")
-    odds_key = st.secrets.get("ODDS_API_KEY", "")
+    # FIX: check both secret formats
+    odds_key = ""
+    try: odds_key = st.secrets["odds"]["api_key"]
+    except: pass
+    if not odds_key:
+        try: odds_key = st.secrets["ODDS_API_KEY"]
+        except: pass
     st.markdown(f"**Odds API:** {'✅' if odds_key else '⚠️ No key'}")
     st.markdown(f"**Injury Feed:** ✅ Rotowire")
     st.markdown(f"**Supabase:** {'✅' if supabase else '❌'}")
@@ -912,18 +853,14 @@ if slate_mode == "📂 Upload DK CSV":
 else:
     # Demo slate
     players = [
-        {"name":"Kodai Senga","team":"NYM","position":"P","tier":1,"dk_projection":22.8,"salary":9200,"opponent":"ATH","home_team":"NYM","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-1.5,"vegas_total":4.0,"opp_pitcher":"Jacob Lopez","opp_pitcher_era":4.85,"park_factor":0.97,"park_name":"Citi Field","ownership_pct":None,"ownership_proxy":1.0,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":True,"stack_team":""},
-        {"name":"Michael Wacha","team":"KC","position":"P","tier":1,"dk_projection":17.2,"salary":8500,"opponent":"CWS","home_team":"KC","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-1.5,"vegas_total":5.0,"opp_pitcher":"Erick Fedde","opp_pitcher_era":4.90,"park_factor":0.98,"park_name":"Kauffman Stadium","ownership_pct":None,"ownership_proxy":0.9,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":True,"stack_team":""},
-        {"name":"Sal Stewart","team":"CIN","position":"1B","tier":2,"dk_projection":11.4,"salary":4500,"opponent":"LAA","home_team":"CIN","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-0.5,"vegas_total":5.0,"opp_pitcher":"George Klassen","opp_pitcher_era":4.80,"park_factor":1.07,"park_name":"Great American Ball Park","ownership_pct":None,"ownership_proxy":0.85,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"CIN"},
-        {"name":"Matt McLain","team":"CIN","position":"2B","tier":2,"dk_projection":10.8,"salary":3900,"opponent":"LAA","home_team":"CIN","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-0.5,"vegas_total":5.0,"opp_pitcher":"George Klassen","opp_pitcher_era":4.80,"park_factor":1.07,"park_name":"Great American Ball Park","ownership_pct":None,"ownership_proxy":0.8,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"CIN"},
-        {"name":"Eugenio Suarez","team":"CIN","position":"3B","tier":3,"dk_projection":11.1,"salary":4700,"opponent":"LAA","home_team":"CIN","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-0.5,"vegas_total":5.0,"opp_pitcher":"George Klassen","opp_pitcher_era":4.80,"park_factor":1.07,"park_name":"Great American Ball Park","ownership_pct":None,"ownership_proxy":0.9,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"CIN"},
-        {"name":"Zach Neto","team":"LAA","position":"SS","tier":3,"dk_projection":12.9,"salary":4700,"opponent":"CIN","home_team":"CIN","game_time_str":"04:10PM","is_home":False,"inj_status":"","inj_note":"","vegas_spread":0.5,"vegas_total":5.0,"opp_pitcher":"Brandon Williamson","opp_pitcher_era":3.80,"park_factor":1.07,"park_name":"Great American Ball Park","ownership_pct":None,"ownership_proxy":0.85,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"LAA"},
-        {"name":"Spencer Steer","team":"CIN","position":"OF","tier":4,"dk_projection":11.6,"salary":3000,"opponent":"LAA","home_team":"CIN","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-0.5,"vegas_total":5.0,"opp_pitcher":"George Klassen","opp_pitcher_era":4.80,"park_factor":1.07,"park_name":"Great American Ball Park","ownership_pct":None,"ownership_proxy":0.8,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"CIN"},
-        {"name":"Jo Adell","team":"LAA","position":"OF","tier":4,"dk_projection":10.8,"salary":3900,"opponent":"CIN","home_team":"CIN","game_time_str":"04:10PM","is_home":False,"inj_status":"","inj_note":"","vegas_spread":0.5,"vegas_total":5.0,"opp_pitcher":"Brandon Williamson","opp_pitcher_era":3.80,"park_factor":1.07,"park_name":"Great American Ball Park","ownership_pct":None,"ownership_proxy":0.7,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"LAA"},
-        {"name":"TJ Friedl","team":"CIN","position":"OF","tier":5,"dk_projection":9.8,"salary":3600,"opponent":"LAA","home_team":"CIN","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-0.5,"vegas_total":5.0,"opp_pitcher":"George Klassen","opp_pitcher_era":4.80,"park_factor":1.07,"park_name":"Great American Ball Park","ownership_pct":None,"ownership_proxy":0.75,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"CIN"},
-        {"name":"Will Benson","team":"CIN","position":"OF","tier":5,"dk_projection":8.9,"salary":3100,"opponent":"LAA","home_team":"CIN","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-0.5,"vegas_total":5.0,"opp_pitcher":"George Klassen","opp_pitcher_era":4.80,"park_factor":1.07,"park_name":"Great American Ball Park","ownership_pct":None,"ownership_proxy":0.65,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"CIN"},
-        {"name":"Carter Jensen","team":"KC","position":"C","tier":6,"dk_projection":9.6,"salary":4000,"opponent":"CWS","home_team":"KC","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-1.5,"vegas_total":5.0,"opp_pitcher":"Erick Fedde","opp_pitcher_era":4.90,"park_factor":0.98,"park_name":"Kauffman Stadium","ownership_pct":None,"ownership_proxy":0.8,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"KC"},
-        {"name":"Jorge Soler","team":"LAA","position":"OF","tier":6,"dk_projection":10.8,"salary":3200,"opponent":"CIN","home_team":"CIN","game_time_str":"04:10PM","is_home":False,"inj_status":"","inj_note":"","vegas_spread":0.5,"vegas_total":5.0,"opp_pitcher":"Brandon Williamson","opp_pitcher_era":3.80,"park_factor":1.07,"park_name":"Great American Ball Park","ownership_pct":None,"ownership_proxy":0.7,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"LAA"},
+        {"name":"Max Fried","team":"NYY","position":"P","tier":1,"dk_projection":22.5,"salary":10200,"opponent":"SF","home_team":"NYY","game_time_str":"07:05PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-1.5,"vegas_total":8.5,"opp_pitcher":"Logan Webb","opp_pitcher_era":3.15,"park_factor":1.02,"park_name":"Yankee Stadium","ownership_pct":None,"ownership_proxy":1.0,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":True,"stack_team":""},
+        {"name":"Michael Wacha","team":"KC","position":"P","tier":1,"dk_projection":19.8,"salary":9400,"opponent":"CWS","home_team":"KC","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-1.5,"vegas_total":7.5,"opp_pitcher":"Erick Fedde","opp_pitcher_era":4.09,"park_factor":0.98,"park_name":"Kauffman Stadium","ownership_pct":None,"ownership_proxy":0.9,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":True,"stack_team":""},
+        {"name":"Jacob Lopez","team":"ATH","position":"P","tier":2,"dk_projection":14.2,"salary":6800,"opponent":"NYM","home_team":"NYM","game_time_str":"04:10PM","is_home":False,"inj_status":"","inj_note":"","vegas_spread":1.5,"vegas_total":8.0,"opp_pitcher":"Freddy Peralta","opp_pitcher_era":3.40,"park_factor":0.97,"park_name":"Citi Field","ownership_pct":None,"ownership_proxy":0.75,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":True,"stack_team":""},
+        {"name":"Jesse Winker","team":"NYM","position":"OF","tier":2,"dk_projection":11.4,"salary":4500,"opponent":"ATH","home_team":"NYM","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-1.5,"vegas_total":8.0,"opp_pitcher":"Jacob Lopez","opp_pitcher_era":6.48,"park_factor":0.97,"park_name":"Citi Field","ownership_pct":None,"ownership_proxy":0.85,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"NYM"},
+        {"name":"Pete Alonso","team":"NYM","position":"1B","tier":3,"dk_projection":11.8,"salary":4900,"opponent":"ATH","home_team":"NYM","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-1.5,"vegas_total":8.0,"opp_pitcher":"Jacob Lopez","opp_pitcher_era":6.48,"park_factor":0.97,"park_name":"Citi Field","ownership_pct":None,"ownership_proxy":0.9,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"NYM"},
+        {"name":"MJ Melendez","team":"KC","position":"C","tier":4,"dk_projection":10.2,"salary":3800,"opponent":"CWS","home_team":"KC","game_time_str":"04:10PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-1.5,"vegas_total":7.5,"opp_pitcher":"Erick Fedde","opp_pitcher_era":4.09,"park_factor":0.98,"park_name":"Kauffman Stadium","ownership_pct":None,"ownership_proxy":0.8,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"KC"},
+        {"name":"Cody Bellinger","team":"NYY","position":"OF","tier":5,"dk_projection":9.6,"salary":3400,"opponent":"SF","home_team":"NYY","game_time_str":"07:05PM","is_home":True,"inj_status":"","inj_note":"","vegas_spread":-1.5,"vegas_total":8.5,"opp_pitcher":"Logan Webb","opp_pitcher_era":3.15,"park_factor":1.02,"park_name":"Yankee Stadium","ownership_pct":None,"ownership_proxy":0.75,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"NYY"},
+        {"name":"Luis Matos","team":"SF","position":"OF","tier":6,"dk_projection":8.4,"salary":2900,"opponent":"NYY","home_team":"NYY","game_time_str":"07:05PM","is_home":False,"inj_status":"","inj_note":"","vegas_spread":1.5,"vegas_total":8.5,"opp_pitcher":"Max Fried","opp_pitcher_era":3.15,"park_factor":1.02,"park_name":"Yankee Stadium","ownership_pct":None,"ownership_proxy":0.5,"cash_score":0,"gpp_score":0,"cash_reasons":[],"gpp_reasons":[],"spike_boost":0,"spike_reason":"","is_pitcher":False,"stack_team":"SF"},
     ]
     with tab1:
         st.info("📌 Demo mode — upload a real DK MLB CSV to get started.")
@@ -947,13 +884,11 @@ TIER_CLASSES = {1:"t1",2:"t2",3:"t3",4:"t4",5:"t5",6:"t6"}
 
 # ── TAB 1: Today's Slate ──────────────────────────────────────────────────────
 with tab1:
-    # Urgent locks
     for gl in [g for g in game_locks if 0 <= g["minutes_until_lock"] <= 30]:
         st.markdown(f'<div class="alert-lock">⏰ <b style="color:#f5a623">LOCK IN {gl["minutes_until_lock"]} MIN</b> — {gl["matchup"]}</div>', unsafe_allow_html=True)
 
-    # Metrics
-    out_count = sum(1 for p in players if "OUT" in p.get("inj_status","").upper())
-    gtd_count = sum(1 for p in players if any(x in p.get("inj_status","").upper() for x in ["GTD","QUESTIONABLE"]))
+    out_count     = sum(1 for p in players if "OUT" in p.get("inj_status","").upper())
+    gtd_count     = sum(1 for p in players if any(x in p.get("inj_status","").upper() for x in ["GTD","QUESTIONABLE"]))
     pitcher_count = sum(1 for p in players if p["is_pitcher"])
 
     c1,c2,c3,c4 = st.columns(4)
@@ -962,7 +897,6 @@ with tab1:
     with c3: st.markdown(f'<div class="metric-card"><div class="metric-val" style="color:#f5a623">{gtd_count}</div><div class="metric-lbl">GTD</div></div>', unsafe_allow_html=True)
     with c4: st.markdown(f'<div class="metric-card"><div class="metric-val" style="color:#4fc3f7">{pitcher_count}</div><div class="metric-lbl">Pitchers</div></div>', unsafe_allow_html=True)
 
-    # Game locks
     if game_locks:
         st.markdown("**⏱ Game Locks**")
         for gl in game_locks:
@@ -971,14 +905,12 @@ with tab1:
             elif mins <= 15: icon="🔴"; color="#f87171"; txt=f"LOCKS IN {mins}m"
             elif mins <= 45: icon="🟡"; color="#f5a623"; txt=f"Locks in {mins}m"
             else:
-                h,m = divmod(mins,60)
-                txt = f"Locks in {h}h {m}m" if h else f"Locks in {m}m"
+                h,m = divmod(mins,60); txt = f"Locks in {h}h {m}m" if h else f"Locks in {m}m"
                 icon="🟢"; color="#52b788"
             st.markdown(f'<div class="lock-bar"><span style="color:#e8eaf0;font-size:0.85rem">{gl["matchup"]}</span><span style="color:{color};font-weight:700">{icon} {txt}</span></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Tier panels
     for tier_num in range(1, 7):
         tier_ps = [p for p in players if p["tier"] == tier_num]
         if not tier_ps: continue
@@ -986,8 +918,7 @@ with tab1:
         gpp_s  = sorted(tier_ps, key=lambda x: x["gpp_score"],  reverse=True)
 
         with st.expander(f"{TIER_LABELS[tier_num]}", expanded=True):
-            # Pitchers get their own section
-            pitchers = [p for p in tier_ps if p["is_pitcher"]]
+            pitchers     = [p for p in tier_ps if p["is_pitcher"]]
             batters_cash = [p for p in cash_s if not p["is_pitcher"]]
             batters_gpp  = [p for p in gpp_s  if not p["is_pitcher"]]
 
@@ -1013,13 +944,11 @@ with tab1:
                     if len(shown) >= 2: break
 
             if show_all:
-                rows = []
-                for p in cash_s:
-                    rows.append({"Player":p["name"],"Pos":p["position"],"Team":p["team"],"vs":p["opponent"],
-                                 "Proj":p["dk_projection"],"Sal":p.get("salary",0),"Cash":p["cash_score"],
-                                 "GPP":p["gpp_score"],"Park PF":p.get("park_factor",""),
-                                 "Opp ERA":p.get("opp_pitcher_era",""),"O/U":p.get("vegas_total",""),
-                                 "Own%":p.get("ownership_pct",""),"Inj":p.get("inj_status","")})
+                rows = [{"Player":p["name"],"Pos":p["position"],"Team":p["team"],"vs":p["opponent"],
+                         "Proj":p["dk_projection"],"Sal":p.get("salary",0),"Cash":p["cash_score"],
+                         "GPP":p["gpp_score"],"Park PF":p.get("park_factor",""),
+                         "Opp ERA":p.get("opp_pitcher_era",""),"O/U":p.get("vegas_total",""),
+                         "Own%":p.get("ownership_pct",""),"Inj":p.get("inj_status","")} for p in cash_s]
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 # ── TAB 2: Stack Advisor ──────────────────────────────────────────────────────
@@ -1034,9 +963,7 @@ with tab2:
             score = data["score"]
             color = "#52b788" if score >= 65 else ("#f5a623" if score >= 50 else "#f87171")
             rank_label = "🥇 TOP STACK" if idx == 0 else (f"#{idx+1}" if idx < 3 else f"#{idx+1} — avoid")
-            park = data["park"]
-            era_grade, era_color = pitcher_grade(data["opp_era"])
-
+            park = data["park"]; era_grade, era_color = pitcher_grade(data["opp_era"])
             st.markdown(f"""
             <div class="stack-card">
             <div style='display:flex;justify-content:space-between;align-items:center'>
@@ -1121,15 +1048,13 @@ with tab3:
         elif mins <= 15: icon="🔴"; color="#f87171"; txt=f"LOCKS IN {mins} MIN"
         elif mins <= 45: icon="🟡"; color="#f5a623"; txt=f"Locks in {mins}m"
         else:
-            h,m = divmod(mins,60)
-            txt = f"Locks in {h}h {m}m" if h else f"Locks in {m}m"
+            h,m = divmod(mins,60); txt = f"Locks in {h}h {m}m" if h else f"Locks in {m}m"
             icon="🟢"; color="#52b788"
         st.markdown(f"{icon} **{gl['matchup']}** — <span style='color:{color}'>{txt}</span>", unsafe_allow_html=True)
 
 # ── TAB 4: My Lineup ──────────────────────────────────────────────────────────
 with tab4:
     st.markdown("### 📋 My Lineup")
-
     col_l, col_r = st.columns(2)
     with col_l:
         st.markdown("#### 💵 Cash (Triple Up)")
@@ -1159,12 +1084,11 @@ with tab4:
                 choice = st.selectbox(f"T{tier_num} full", [p["name"] for p in active], key=f"gpp_full_t{tier_num}")
             st.session_state.picks_gpp[tier_num] = choice
 
-    # Injury alerts
     st.markdown("---")
     cash_alerts = []; gpp_alerts = []
     for t in range(1, 7):
-        for pick, alist, label in [(st.session_state.picks_cash.get(t,""), cash_alerts, "Cash"),
-                                    (st.session_state.picks_gpp.get(t,""), gpp_alerts, "GPP")]:
+        for pick, alist in [(st.session_state.picks_cash.get(t,""), cash_alerts),
+                            (st.session_state.picks_gpp.get(t,""), gpp_alerts)]:
             if not pick: continue
             p = next((x for x in players if x["name"]==pick), None)
             if not p: continue
@@ -1185,7 +1109,6 @@ with tab4:
         if st.session_state.picks_cash or st.session_state.picks_gpp:
             st.success("✅ All your picks are healthy")
 
-    # Final lineups
     if len(st.session_state.picks_cash) == 6 and len(st.session_state.picks_gpp) == 6:
         lc, rg = st.columns(2)
         with lc:
