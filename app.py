@@ -318,6 +318,130 @@ def get_vegas(team, vegas_lines):
             return v
     return {"spread": None, "total": None}
 
+# ── Implied Team Total ────────────────────────────────────────────────────────
+def implied_total(spread, total):
+    """
+    Calculate implied team run total from spread and O/U.
+    Formula: implied = (total / 2) - (spread / 2)
+    e.g. O/U 9, spread -1.5 -> implied = 4.5 + 0.75 = 5.25 runs
+    """
+    if spread is None or total is None:
+        return None
+    return round((total / 2) - (spread / 2), 2)
+
+# ── Weather Fetch (from NWS API) ──────────────────────────────────────────────
+# MLB stadium coordinates for weather lookup
+STADIUM_COORDS = {
+    "NYY": (40.8296, -73.9262, "Bronx, NY"),
+    "NYM": (40.7571, -73.8458, "Queens, NY"),
+    "BOS": (42.3467, -71.0972, "Boston, MA"),
+    "PHI": (39.9061, -75.1665, "Philadelphia, PA"),
+    "ATL": (33.8911, -84.4681, "Cumberland, GA"),
+    "MIA": (25.7781, -80.2197, "Miami, FL"),
+    "WSH": (38.8730, -77.0074, "Washington, DC"),
+    "PIT": (40.4469, -80.0057, "Pittsburgh, PA"),
+    "CHC": (41.9484, -87.6553, "Chicago, IL"),
+    "CWS": (41.8299, -87.6338, "Chicago, IL"),
+    "MIL": (43.0283, -87.9712, "Milwaukee, WI"),
+    "STL": (38.6226, -90.1928, "St. Louis, MO"),
+    "CIN": (39.0979, -84.5082, "Cincinnati, OH"),
+    "CLE": (41.4962, -81.6852, "Cleveland, OH"),
+    "DET": (42.3390, -83.0485, "Detroit, MI"),
+    "MIN": (44.9817, -93.2776, "Minneapolis, MN"),
+    "KC":  (39.0517, -94.4803, "Kansas City, MO"),
+    "TEX": (32.7512, -97.0832, "Arlington, TX"),
+    "HOU": (29.7573, -95.3555, "Houston, TX"),
+    "LAA": (33.8003, -117.8827, "Anaheim, CA"),
+    "LAD": (34.0739, -118.2400, "Los Angeles, CA"),
+    "SF":  (37.7786, -122.3893, "San Francisco, CA"),
+    "SD":  (32.7076, -117.1570, "San Diego, CA"),
+    "COL": (39.7559, -104.9942, "Denver, CO"),
+    "ARI": (33.4453, -112.0667, "Phoenix, AZ"),
+    "SEA": (47.5914, -122.3326, "Seattle, WA"),
+    "OAK": (37.7516, -122.2005, "Oakland, CA"),
+    "ATH": (37.7516, -122.2005, "Oakland, CA"),
+    "TB":  (27.7683, -82.6534, "St. Petersburg, FL"),
+    "BAL": (39.2838, -76.6218, "Baltimore, MD"),
+    "TOR": (43.6414, -79.3894, "Toronto, ON"),
+}
+
+@st.cache_data(ttl=1800)
+def fetch_weather_for_game(home_team):
+    """Fetch current weather for a stadium using NWS API."""
+    coords = STADIUM_COORDS.get(home_team)
+    if not coords:
+        return None
+    lat, lon, city = coords
+    try:
+        # NWS points endpoint
+        points_url = f"https://api.weather.gov/points/{lat},{lon}"
+        resp = requests.get(points_url, headers={"User-Agent": "DFSTierOptimizer/1.0"}, timeout=10)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        forecast_url = data["properties"]["forecastHourly"]
+        resp2 = requests.get(forecast_url, headers={"User-Agent": "DFSTierOptimizer/1.0"}, timeout=10)
+        if resp2.status_code != 200:
+            return None
+        periods = resp2.json()["properties"]["periods"]
+        if not periods:
+            return None
+        p = periods[0]
+        return {
+            "temp": p.get("temperature", 0),
+            "wind_speed": p.get("windSpeed", "0 mph"),
+            "wind_dir": p.get("windDirection", ""),
+            "description": p.get("shortForecast", ""),
+            "city": city,
+        }
+    except:
+        return None
+
+def weather_impact(weather, park_name):
+    """
+    Assess weather impact on scoring.
+    Returns (score_adjustment, reason)
+    """
+    if not weather:
+        return 0, ""
+    
+    temp = weather.get("temp", 72)
+    wind_str = weather.get("wind_speed", "0 mph")
+    wind_dir = weather.get("wind_dir", "")
+    
+    try:
+        wind_mph = int(wind_str.split(" ")[0])
+    except:
+        wind_mph = 0
+    
+    adj = 0
+    reasons = []
+    
+    # Temperature
+    if temp >= 85:
+        adj += 4; reasons.append(f"Hot {temp}°F — ball carries")
+    elif temp >= 75:
+        adj += 2
+    elif temp <= 50:
+        adj -= 4; reasons.append(f"Cold {temp}°F — ball dies")
+    elif temp <= 60:
+        adj -= 2; reasons.append(f"Cool {temp}°F")
+    
+    # Wind — out = hitter boost, in = pitcher boost
+    if wind_mph >= 15:
+        out_dirs = ["Out", "S", "SE", "SW", "E", "W"]
+        in_dirs = ["In", "N", "NE", "NW"]
+        if any(d in wind_dir for d in out_dirs):
+            adj += 6; reasons.append(f"Wind out {wind_mph}mph 🔥")
+        elif any(d in wind_dir for d in in_dirs):
+            adj -= 5; reasons.append(f"Wind in {wind_mph}mph ❄️")
+        else:
+            adj += 2; reasons.append(f"Wind {wind_mph}mph")
+    elif wind_mph >= 10:
+        adj += 2 if "S" in wind_dir or "E" in wind_dir else -1
+    
+    return adj, " · ".join(reasons)
+
 # ── Stack Detection ───────────────────────────────────────────────────────────
 def detect_stacks(players, vegas_lines):
     """
@@ -360,8 +484,15 @@ def detect_stacks(players, vegas_lines):
         elif opp_pitcher_era <= 3.5:
             score -= 8; reasons.append(f"Good SP (ERA {opp_pitcher_era:.2f})")
 
-        # Vegas total (implied runs)
-        if total:
+        # Implied team total (most important factor)
+        imp = implied_total(spread, total) if total else None
+        if imp is not None:
+            if imp >= 5.5: score += 20; reasons.append(f"Implied {imp:.1f} runs — elite stack spot")
+            elif imp >= 4.5: score += 12; reasons.append(f"Implied {imp:.1f} runs")
+            elif imp >= 4.0: score += 5
+            elif imp <= 3.0: score -= 15; reasons.append(f"Implied {imp:.1f} runs — avoid")
+            elif imp <= 3.5: score -= 8; reasons.append(f"Low implied {imp:.1f} runs")
+        elif total:
             if total >= 10: score += 15; reasons.append(f"High O/U {total}")
             elif total >= 9: score += 10; reasons.append(f"O/U {total}")
             elif total >= 8: score += 5
@@ -911,7 +1042,7 @@ with tab2:
             <div style='display:flex;justify-content:space-between;align-items:center'>
               <div>
                 <div style='font-family:Barlow Condensed,sans-serif;font-size:1.2rem;font-weight:700;color:#fff'>{team} vs {data["opp"]} · {rank_label}</div>
-                <div class='pmeta'>Opp SP ERA: <b style='color:{era_color}'>{data["opp_era"]:.2f} ({era_grade})</b> · O/U: {data["total"] or "N/A"} · Park: {park["name"]} ({park["factor"]:.2f})</div>
+                <div class='pmeta'>Opp SP ERA: <b style='color:{era_color}'>{data["opp_era"]:.2f} ({era_grade})</b> · O/U: {data["total"] or "N/A"} · Implied: {f'{implied_total(data["spread"], data["total"]):.1f} runs' if data["total"] else "N/A"} · Park: {park["name"]} ({park["factor"]:.2f})</div>
                 <div class='pmeta'>{" · ".join(data["reasons"])}</div>
                 <div class='pmeta'>{data["player_count"]} players available in pool</div>
               </div>
