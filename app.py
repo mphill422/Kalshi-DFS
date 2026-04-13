@@ -238,7 +238,7 @@ def fetch_vegas_lines():
     try:
         # FIX: Try both nested and flat secret formats
         try:
-            api_key = st.secrets["ODDS_API_KEY"]
+            api_key = st.secrets["odds"]["api_key"]
         except:
             return lines
         if not api_key:
@@ -792,7 +792,7 @@ with st.sidebar:
     st.markdown("### 🔑 API Status")
     # FIX: check both secret formats
     try:
-        odds_key = st.secrets["ODDS_API_KEY"]
+        odds_key = st.secrets["odds"]["api_key"]
     except:
         odds_key = ""
     st.markdown(f"**Odds API:** {'✅' if odds_key else '⚠️ No key'}")
