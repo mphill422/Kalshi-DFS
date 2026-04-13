@@ -236,12 +236,13 @@ def pitcher_grade(era):
 def fetch_vegas_lines():
     lines = {}
     try:
-        # FIX: Try both nested and flat secret formats
         try:
             api_key = st.secrets["odds"]["api_key"]
-        except:
+        except Exception as e:
+            st.session_state["vegas_error"] = f"Key read error: {e}"
             return lines
         if not api_key:
+            st.session_state["vegas_error"] = "API key empty"
             return lines
 
         resp = requests.get(
@@ -250,7 +251,11 @@ def fetch_vegas_lines():
             timeout=12
         )
         if resp.status_code == 200:
-            for game in resp.json():
+            data = resp.json()
+            if not data:
+                st.session_state["vegas_error"] = "API returned empty list"
+                return lines
+            for game in data:
                 home = game.get("home_team", "")
                 away = game.get("away_team", "")
                 spread, total = None, None
@@ -265,9 +270,14 @@ def fetch_vegas_lines():
                     break
                 lines[home] = {"spread": spread, "total": total, "opponent": away}
                 lines[away] = {"spread": -spread if spread else None, "total": total, "opponent": home}
-    except:
-        pass
+            st.session_state["vegas_error"] = ""
+            st.session_state["vegas_sample"] = list(lines.keys())[:4]
+        else:
+            st.session_state["vegas_error"] = f"HTTP {resp.status_code}: {resp.text[:150]}"
+    except Exception as e:
+        st.session_state["vegas_error"] = f"Exception: {str(e)}"
     return lines
+
 
 @st.cache_data(ttl=600)
 def fetch_mlb_injuries():
@@ -1004,9 +1014,10 @@ with st.spinner("Loading injuries, Vegas lines, scoring..."):
     # DEBUG — remove after confirming keys
     if vegas_lines:
         st.sidebar.markdown("**Vegas keys sample:**")
-        st.sidebar.write(list(vegas_lines.keys())[:6])
+        st.sidebar.write(list(vegas_lines.keys())[:4])
     else:
-        st.sidebar.warning("Vegas lines empty — API not returning data")
+        err = st.session_state.get("vegas_error", "Unknown error")
+        st.sidebar.error(f"Vegas: {err}")
     batting_orders= fetch_batting_orders()
     players       = assign_opp_pitchers(players)
     players       = assign_batting_orders(players, batting_orders)
