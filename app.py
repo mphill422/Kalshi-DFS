@@ -1001,6 +1001,12 @@ if not players:
 with st.spinner("Loading injuries, Vegas lines, scoring..."):
     injuries      = fetch_mlb_injuries()
     vegas_lines   = fetch_vegas_lines()
+    # DEBUG — remove after confirming keys
+    if vegas_lines:
+        st.sidebar.markdown("**Vegas keys sample:**")
+        st.sidebar.write(list(vegas_lines.keys())[:6])
+    else:
+        st.sidebar.warning("Vegas lines empty — API not returning data")
     batting_orders= fetch_batting_orders()
     players       = assign_opp_pitchers(players)
     players       = assign_batting_orders(players, batting_orders)
