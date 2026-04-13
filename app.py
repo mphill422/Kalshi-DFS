@@ -894,7 +894,7 @@ with st.sidebar:
     st.markdown(f"**Supabase:** {'✅' if supabase else '❌'}")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs(["⚾ Today's Slate", "📊 Stack Advisor", "🔄 Late Swap", "📋 My Lineup"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚾ Today's Slate", "🏟️ Game Environment", "🎯 Best Bets", "🔄 Late Swap", "📋 My Lineup"])
 
 # ── Load Slate ────────────────────────────────────────────────────────────────
 players = []
@@ -1039,45 +1039,188 @@ with tab1:
                          "Own%":p.get("ownership_pct",""),"Inj":p.get("inj_status","")} for p in cash_s]
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-# ── TAB 2: Stack Advisor ──────────────────────────────────────────────────────
+# ── TAB 2: Game Environment ───────────────────────────────────────────────────
 with tab2:
-    st.markdown("### 📊 Stack Advisor")
-    st.caption("Ranks teams by stacking opportunity based on opposing pitcher, park factor, and Vegas lines")
+    st.markdown("### 🏟️ Game Environment")
+    st.caption("Best run environments to target batters from — ranked by implied total, park, and pitcher quality")
 
-    if not stacks:
-        st.info("Upload your CSV to see stack recommendations.")
+    # Build unique games from player pool
+    games_seen = {}
+    for p in players:
+        if not p.get("opponent"): continue
+        matchup = "-".join(sorted([p["team"], p["opponent"]]))
+        if matchup not in games_seen:
+            home = p["home_team"]
+            park = get_park(home)
+            total = p.get("vegas_total")
+            spread = p.get("vegas_spread")
+            imp = implied_total(spread, total) if total and spread is not None else None
+            games_seen[matchup] = {
+                "teams": f"{p['team']} vs {p['opponent']}",
+                "home": home,
+                "park": park,
+                "total": total,
+                "spread": spread,
+                "implied": imp,
+                "lock": p.get("game_time_str", ""),
+            }
+
+    if not games_seen:
+        st.info("Upload your CSV to see game environments.")
     else:
-        for idx, (team, data) in enumerate(list(stacks.items())[:6]):
-            score = data["score"]
-            color = "#52b788" if score >= 65 else ("#f5a623" if score >= 50 else "#f87171")
-            rank_label = "🥇 TOP STACK" if idx == 0 else (f"#{idx+1}" if idx < 3 else f"#{idx+1} — avoid")
-            park = data["park"]; era_grade, era_color = pitcher_grade(data["opp_era"])
+        # Score each game environment
+        game_envs = []
+        for key, g in games_seen.items():
+            score = 50.0
+            tags = []
+            total = g["total"]; imp = g["implied"]; pf = g["park"]["factor"]
+
+            if imp is not None:
+                if imp >= 5.5: score += 25; tags.append(f"Implied {imp:.1f} runs 🔥")
+                elif imp >= 5.0: score += 18; tags.append(f"Implied {imp:.1f} runs")
+                elif imp >= 4.5: score += 10; tags.append(f"Implied {imp:.1f} runs")
+                elif imp <= 3.5: score -= 15; tags.append(f"Low implied {imp:.1f} runs ❄️")
+                elif imp <= 4.0: score -= 8; tags.append(f"Implied {imp:.1f} runs")
+            elif total:
+                if total >= 10: score += 20; tags.append(f"O/U {total} 🔥")
+                elif total >= 9: score += 12; tags.append(f"O/U {total}")
+                elif total >= 8: score += 5; tags.append(f"O/U {total}")
+                elif total <= 7: score -= 12; tags.append(f"Low O/U {total} ❄️")
+
+            if pf >= 1.15: score += 15; tags.append(f"Extreme hitter's park ({g['park']['name']})")
+            elif pf >= 1.05: score += 8; tags.append(f"Hitter's park ({g['park']['name']})")
+            elif pf <= 0.95: score -= 10; tags.append(f"Pitcher's park ({g['park']['name']})")
+
+            # Dome = neutral weather, slight negative for hitters
+            if g["home"] in DOMED_STADIUMS:
+                tags.append("🏟️ Domed — weather neutral")
+
+            g["env_score"] = round(score, 1)
+            g["tags"] = tags
+            game_envs.append(g)
+
+        game_envs.sort(key=lambda x: x["env_score"], reverse=True)
+
+        for idx, g in enumerate(game_envs):
+            score = g["env_score"]
+            color = "#52b788" if score >= 65 else ("#f5a623" if score >= 55 else ("#8892a4" if score >= 45 else "#f87171"))
+            rank = "🔥 BEST ENVIRONMENT" if idx == 0 else (f"#{idx+1}" if idx < 3 else f"#{idx+1} — avoid batters")
+            total_str = f"O/U {g['total']}" if g["total"] else "O/U N/A"
+            imp_str = f"Implied {g['implied']:.1f}" if g["implied"] is not None else "Implied N/A"
             st.markdown(f"""
             <div class="stack-card">
             <div style='display:flex;justify-content:space-between;align-items:center'>
               <div>
-                <div style='font-family:Barlow Condensed,sans-serif;font-size:1.2rem;font-weight:700;color:#fff'>{team} vs {data["opp"]} · {rank_label}</div>
-                <div class='pmeta'>Opp SP ERA: <b style='color:{era_color}'>{data["opp_era"]:.2f} ({era_grade})</b> · O/U: {data["total"] or "N/A"} · Implied: {f'{implied_total(data["spread"], data["total"]):.1f} runs' if data["total"] else "N/A"} · Park: {park["name"]} ({park["factor"]:.2f})</div>
-                <div class='pmeta'>{" · ".join(data["reasons"])}</div>
-                <div class='pmeta'>{data["player_count"]} players available in pool</div>
+                <div style='font-family:Barlow Condensed,sans-serif;font-size:1.15rem;font-weight:700;color:#fff'>{g["teams"]} · {rank}</div>
+                <div class='pmeta'>{total_str} · {imp_str} · {g["park"]["name"]} (PF {g["park"]["factor"]:.2f}) · {g["lock"]}</div>
+                <div class='pmeta' style='margin-top:3px'>{" · ".join(g["tags"][:3])}</div>
               </div>
               <div style='text-align:center;min-width:52px'>
                 <div style='background:#1a2a1a;border-radius:8px;padding:6px 10px;font-family:Barlow Condensed,sans-serif;font-size:1.3rem;font-weight:700;color:{color}'>{score:.0f}</div>
-                <div style='font-size:0.6rem;color:#8892a4;margin-top:2px'>STACK SCORE</div>
+                <div style='font-size:0.6rem;color:#8892a4;margin-top:2px'>ENV SCORE</div>
               </div>
             </div>
             </div>
             """, unsafe_allow_html=True)
 
-        st.markdown("---")
-        st.markdown("**💡 Stack Rules for MLB Tiers:**")
-        st.markdown("- Stack 3-4 batters from your top team against the weakest pitcher")
-        st.markdown("- Add 1-2 batters from a second game as bring-back")
-        st.markdown("- Never roster a pitcher AND stack batters against them")
-        st.markdown("- Hitter's park + weak SP + high O/U = premium stack spot")
-
-# ── TAB 3: Late Swap ──────────────────────────────────────────────────────────
+# ── TAB 3: Best Bets ──────────────────────────────────────────────────────────
 with tab3:
+    st.markdown("### 🎯 Tier Best Bets")
+    st.caption("One clear recommendation per tier for cash and GPP with full reasoning")
+
+    if not any(p["cash_score"] > 0 for p in players):
+        st.info("Upload your CSV to see best bets.")
+    else:
+        # Pitcher avoid set — pitchers in pool whose batters should NOT be rostered
+        pitchers_in_pool = {p["team"]: p["name"] for p in players if p["is_pitcher"]}
+
+        for tier_num in range(1, 7):
+            tier_ps = [p for p in players if p["tier"] == tier_num]
+            if not tier_ps: continue
+
+            pitchers_t = [p for p in tier_ps if p["is_pitcher"]]
+            batters_t  = [p for p in tier_ps if not p["is_pitcher"]
+                          and "OUT" not in p.get("inj_status","").upper()]
+            if not batters_t and not pitchers_t: continue
+
+            st.markdown(f"<div class='{'t'+str(tier_num)}'><b>{TIER_LABELS[tier_num]}</b></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+            col_c, col_g = st.columns(2)
+
+            # Cash best bet
+            with col_c:
+                st.markdown("<div class='lbl-cash'>💵 CASH PICK</div>", unsafe_allow_html=True)
+                if pitchers_t:
+                    best = sorted(pitchers_t, key=lambda x: x["cash_score"], reverse=True)[0]
+                elif batters_t:
+                    best = sorted(batters_t, key=lambda x: x["cash_score"], reverse=True)[0]
+                else:
+                    best = None
+                if best:
+                    era = get_pitcher_era(best["name"]) if best["is_pitcher"] else best.get("opp_pitcher_era", 4.50)
+                    era_label = f"ERA {era:.2f}" if best["is_pitcher"] else f"Opp ERA {era:.2f}"
+                    bat_pos = best.get("batting_order", 0)
+                    bat_str = f" · Bats #{bat_pos}" if bat_pos > 0 else ""
+                    total_str = f" · O/U {best['vegas_total']}" if best.get("vegas_total") else ""
+                    reasons = " · ".join(best.get("cash_reasons", [])[:2])
+                    st.markdown(f"""
+                    <div class='pick-cash'>
+                    <div class='pname'>{best['name']} <span style='color:#8892a4;font-size:0.8rem'>{best['position']}</span></div>
+                    <div class='pmeta'>{best['team']} vs {best['opponent']}{bat_str}{total_str}</div>
+                    <div class='pmeta'>{era_label} · {best.get('park_name','')}</div>
+                    <div class='preason' style='margin-top:4px;color:#52b788'>{reasons}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            # GPP best bet
+            with col_g:
+                st.markdown("<div class='lbl-gpp'>🏆 GPP PICK</div>", unsafe_allow_html=True)
+                if batters_t:
+                    best_gpp = sorted(batters_t, key=lambda x: x["gpp_score"], reverse=True)[0]
+                elif pitchers_t:
+                    best_gpp = sorted(pitchers_t, key=lambda x: x["gpp_score"], reverse=True)[0]
+                else:
+                    best_gpp = None
+                if best_gpp:
+                    era_gpp = best_gpp.get("opp_pitcher_era", 4.50)
+                    bat_pos_g = best_gpp.get("batting_order", 0)
+                    bat_str_g = f" · Bats #{bat_pos_g}" if bat_pos_g > 0 else ""
+                    total_str_g = f" · O/U {best_gpp['vegas_total']}" if best_gpp.get("vegas_total") else ""
+                    own = best_gpp.get("ownership_pct", 0) or 0
+                    own_str = f" · ~{own:.0f}% own" if own else ""
+                    reasons_g = " · ".join(best_gpp.get("gpp_reasons", [])[:2])
+                    st.markdown(f"""
+                    <div class='pick-gpp'>
+                    <div class='pname'>{best_gpp['name']} <span style='color:#8892a4;font-size:0.8rem'>{best_gpp['position']}</span></div>
+                    <div class='pmeta'>{best_gpp['team']} vs {best_gpp['opponent']}{bat_str_g}{total_str_g}{own_str}</div>
+                    <div class='pmeta'>Opp ERA {era_gpp:.2f} · {best_gpp.get('park_name','')}</div>
+                    <div class='preason' style='margin-top:4px;color:#ce93d8'>{reasons_g}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            st.markdown("---")
+
+        # Pitcher Avoid section
+        st.markdown("### ⛔ Pitcher Avoid List")
+        st.caption("If you roster these pitchers, avoid batters facing them in other tiers")
+        if pitchers_in_pool:
+            for team, pitcher_name in pitchers_in_pool.items():
+                era = get_pitcher_era(pitcher_name)
+                grade, color = pitcher_grade(era)
+                affected = [p for p in players if not p["is_pitcher"] and p["opponent"] == team]
+                affected_names = ", ".join(p["name"] for p in affected[:4])
+                st.markdown(f"""
+                <div style='background:#1a0a0a;border:1px solid #3a1a1a;border-left:3px solid #f87171;border-radius:8px;padding:0.6rem 0.9rem;margin-bottom:0.4rem'>
+                <div class='pname' style='color:#f87171'>⛔ {pitcher_name} ({team}) — ERA {era:.2f} {grade}</div>
+                <div class='pmeta'>Avoid batters facing {team}: <b style='color:#e8eaf0'>{affected_names or "none in pool"}</b></div>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("No pitchers in pool yet — upload CSV.")
+
+# ── TAB 4: Late Swap ──────────────────────────────────────────────────────────
+with tab4:
     st.markdown("### 🔄 Late Swap & Injury Manager")
     st.markdown("#### 🩺 Manual Injury Overrides")
     st.caption("Mark players OUT or GTD — overrides auto feed instantly")
@@ -1140,8 +1283,8 @@ with tab3:
             icon="🟢"; color="#52b788"
         st.markdown(f"{icon} **{gl['matchup']}** — <span style='color:{color}'>{txt}</span>", unsafe_allow_html=True)
 
-# ── TAB 4: My Lineup ──────────────────────────────────────────────────────────
-with tab4:
+# ── TAB 5: My Lineup ──────────────────────────────────────────────────────────
+with tab5:
     st.markdown("### 📋 My Lineup")
     col_l, col_r = st.columns(2)
     with col_l:
