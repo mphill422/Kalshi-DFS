@@ -361,12 +361,44 @@ def get_inj(name, injuries):
         if nl in k or k in nl: return v
     return {"status": "", "note": ""}
 
+# ── Full team name → DK abbreviation map (for Odds API matching) ──────────────
+TEAM_NAME_TO_ABBREV = {
+    "arizona diamondbacks": "ARI", "atlanta braves": "ATL",
+    "baltimore orioles": "BAL", "boston red sox": "BOS",
+    "chicago cubs": "CHC", "chicago white sox": "CWS",
+    "cincinnati reds": "CIN", "cleveland guardians": "CLE",
+    "colorado rockies": "COL", "detroit tigers": "DET",
+    "houston astros": "HOU", "kansas city royals": "KC",
+    "los angeles angels": "LAA", "los angeles dodgers": "LAD",
+    "miami marlins": "MIA", "milwaukee brewers": "MIL",
+    "minnesota twins": "MIN", "new york mets": "NYM",
+    "new york yankees": "NYY", "oakland athletics": "OAK",
+    "athletics": "OAK", "philadelphia phillies": "PHI",
+    "pittsburgh pirates": "PIT", "san diego padres": "SD",
+    "san francisco giants": "SF", "seattle mariners": "SEA",
+    "st. louis cardinals": "STL", "tampa bay rays": "TB",
+    "texas rangers": "TEX", "toronto blue jays": "TOR",
+    "washington nationals": "WSH",
+}
+
 def get_vegas(team, vegas_lines):
+    """Match DK team abbrev to Odds API full name entries."""
     t = TEAM_ALIASES.get(team, team)
+    # Direct abbrev match first
     for key in [team, t]:
         if key in vegas_lines: return vegas_lines[key]
+    # Full name match — Odds API stores full names as keys
+    for full_name, abbrev in TEAM_NAME_TO_ABBREV.items():
+        if abbrev == t or abbrev == team:
+            if full_name in vegas_lines: return vegas_lines[full_name]
+            # Try title case
+            title = full_name.title()
+            if title in vegas_lines: return vegas_lines[title]
+    # Partial string match fallback
     for k, v in vegas_lines.items():
-        if team.lower() in k.lower() or k.lower() in team.lower():
+        k_lower = k.lower()
+        team_lower = t.lower()
+        if team_lower in k_lower or k_lower in team_lower:
             return v
     return {"spread": None, "total": None}
 
@@ -618,18 +650,27 @@ def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=s
     return players
 
 def assign_opp_pitchers(players):
+    """
+    Match pitchers in the pool to opposing batters.
+    If no pitcher found in pool for a team, fall back to league avg 4.50.
+    """
     pitcher_map = {}
     for p in players:
         if p["is_pitcher"]:
             era = get_pitcher_era(p["name"])
+            # Store by both their team AND opponent so batters can look up
             pitcher_map[p["team"]] = {"name": p["name"], "era": era}
+
     for p in players:
         if not p["is_pitcher"]:
             opp = p["opponent"]
-            if opp in pitcher_map:
-                p["opp_pitcher"] = pitcher_map[opp]["name"]
-                p["opp_pitcher_era"] = pitcher_map[opp]["era"]
+            opp_resolved = TEAM_ALIASES.get(opp, opp)
+            found = pitcher_map.get(opp) or pitcher_map.get(opp_resolved)
+            if found:
+                p["opp_pitcher"] = found["name"]
+                p["opp_pitcher_era"] = found["era"]
             else:
+                p["opp_pitcher"] = ""
                 p["opp_pitcher_era"] = 4.50
     return players
 
@@ -843,7 +884,9 @@ def make_card(p, mode="cash"):
         f"<div class='{css}'>"
         f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
         f"<div style='flex:1'>"
-        f"<div class='pname'>{p['name']} <span style='color:#8892a4;font-size:0.8rem'>{p['position']}</span></div>"
+        f"<div class='pname'>"
+        f"{'<span style=\"color:#f5a623;font-size:0.9rem;margin-right:4px\">#{bat_pos}</span>' if (bat_pos := p.get('batting_order',0)) > 0 and not p['is_pitcher'] else ''}"
+        f"{p['name']} <span style='color:#8892a4;font-size:0.8rem'>{p['position']}</span></div>"
         f"<div class='pmeta'>{p['team']} vs {p['opponent']} {opp_line} · Proj: {proj:.1f} {sal_str}</div>"
         f"<div class='pmeta'>{vegas_str} · {park}</div>"
         f"<div style='margin-top:5px'>{b_html}</div>"
@@ -1032,10 +1075,10 @@ with tab1:
                     if len(shown) >= 2: break
 
             if show_all:
-                rows = [{"Player":p["name"],"Pos":p["position"],"Team":p["team"],"vs":p["opponent"],
-                         "Proj":p["dk_projection"],"Sal":p.get("salary",0),"Cash":p["cash_score"],
+                rows = [{"Player":p["name"],"Bat#":p.get("batting_order","") or "","Pos":p["position"],"Team":p["team"],"vs":p["opponent"],
+                         "Proj":p["dk_projection"],"Cash":p["cash_score"],
                          "GPP":p["gpp_score"],"Park PF":p.get("park_factor",""),
-                         "Opp ERA":p.get("opp_pitcher_era",""),"O/U":p.get("vegas_total",""),
+                         "Opp ERA":p.get("opp_pitcher_era",""),"O/U":p.get("vegas_total","") or "N/A",
                          "Own%":p.get("ownership_pct",""),"Inj":p.get("inj_status","")} for p in cash_s]
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
