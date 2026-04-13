@@ -346,6 +346,7 @@ def parse_mlb_csv(uploaded_file):
                 "spike_boost": 0, "spike_reason": "",
                 "is_pitcher": position == "P",
                 "stack_team": "",
+                "batting_order": 0,
             })
         return players
     except Exception as e:
@@ -585,9 +586,29 @@ def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=s
             proj_bonus = min((proj - 5) * 1.2, 25)
             cash += proj_bonus; gpp += proj_bonus * 0.7
 
-            if own < 0.4: gpp += 14; gr.append("Low ownership — GPP leverage")
-            elif own < 0.6: gpp += 5
-            else: gpp -= 6; gr.append("High chalk — fade has GPP merit")
+            # GPP ownership lever — only boost if projection is above tier floor
+            # Low ownership on a bad player is not an edge, it's a trap
+            tier_ps_for_floor = [x for x in players if x["tier"] == p["tier"] and not x["is_pitcher"]]
+            tier_projs = sorted([x["dk_projection"] for x in tier_ps_for_floor], reverse=True)
+            # Floor = must be in top 75% of tier by projection to get ownership boost
+            proj_floor = tier_projs[int(len(tier_projs) * 0.75)] if tier_projs else 0
+            above_floor = proj >= proj_floor
+
+            if own < 0.4:
+                if above_floor: gpp += 14; gr.append("Low ownership + upside — GPP leverage 🎯")
+                else: gpp += 4; gr.append("Low ownership but low floor — small GPP boost")
+            elif own < 0.6:
+                if above_floor: gpp += 7
+                else: gpp += 2
+            else:
+                gpp -= 6; gr.append("High chalk — fade has GPP merit")
+
+            # Batting order position
+            bat_pos = p.get("batting_order", 0)
+            bo_cash, bo_gpp, bo_label = batting_order_score(bat_pos)
+            if bo_cash != 0:
+                cash += bo_cash; gpp += bo_gpp
+                if bo_label: cr.append(f"Bats {bat_pos} ({bo_label})")
 
         p["cash_score"] = max(round(cash, 1), 0)
         p["gpp_score"]  = max(round(gpp, 1), 0)
@@ -611,6 +632,67 @@ def assign_opp_pitchers(players):
             else:
                 p["opp_pitcher_era"] = 4.50
     return players
+
+# ── Batting Order Fetch (MLB Stats API) ──────────────────────────────────────
+@st.cache_data(ttl=900)
+def fetch_batting_orders():
+    """
+    Fetch today's confirmed lineups from MLB Stats API.
+    Returns dict: {player_name_lower: batting_order_position}
+    """
+    orders = {}
+    try:
+        today = date.today().strftime("%Y-%m-%d")
+        sched_url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}&hydrate=lineups"
+        resp = requests.get(sched_url, timeout=12)
+        if resp.status_code != 200:
+            return orders
+        data = resp.json()
+        for game_date in data.get("dates", []):
+            for game in game_date.get("games", []):
+                lineups = game.get("lineups", {})
+                for side in ["homePlayers", "awayPlayers"]:
+                    players_list = lineups.get(side, [])
+                    for idx, player in enumerate(players_list):
+                        full_name = player.get("fullName", "").lower().strip()
+                        last_name = full_name.split()[-1] if full_name else ""
+                        pos = idx + 1  # 1-indexed batting order
+                        if full_name:
+                            orders[full_name] = pos
+                        if last_name:
+                            orders[last_name] = pos
+    except:
+        pass
+    return orders
+
+def assign_batting_orders(players, batting_orders):
+    """Match players to their batting order position."""
+    for p in players:
+        if p["is_pitcher"]:
+            p["batting_order"] = 0
+            continue
+        name_lower = p["name"].lower().strip()
+        last_name = name_lower.split()[-1] if name_lower else ""
+        pos = batting_orders.get(name_lower) or batting_orders.get(last_name) or 0
+        p["batting_order"] = pos
+    return players
+
+def batting_order_score(pos):
+    """
+    Return (cash_bonus, gpp_bonus, label) for batting order position.
+    Cleanup (3-5) = biggest boost. Leadoff (1-2) = good. Bottom (7-9) = penalty.
+    """
+    if pos == 0:   return 0, 0, ""          # Unknown — no adjustment
+    if pos == 3:   return 14, 10, "3-hole 🔥"
+    if pos == 4:   return 16, 12, "Cleanup 🔥"
+    if pos == 5:   return 12, 9,  "5-hole"
+    if pos == 2:   return 8,  6,  "2-hole"
+    if pos == 1:   return 6,  5,  "Leadoff"
+    if pos == 6:   return 3,  2,  "6-hole"
+    if pos == 7:   return -3, -2, "7-hole"
+    if pos == 8:   return -6, -4, "8-hole"
+    if pos == 9:   return -8, -5, "9-hole"
+    return 0, 0, ""
 
 def estimate_ownership(players):
     for tier_num in range(1, 7):
@@ -680,6 +762,7 @@ def load_slate():
                 "ownership_pct": None, "ownership_proxy": 0.5, "cash_score": 0, "gpp_score": 0,
                 "cash_reasons": [], "gpp_reasons": [], "spike_boost": 0, "spike_reason": "",
                 "is_pitcher": pos == "P", "stack_team": "",
+                "batting_order": 0,
             })
         return players
     except: return []
@@ -719,7 +802,17 @@ def badges(p):
     if own:
         color = "red" if own >= 35 else ("yellow" if own >= 20 else "green")
         html += b(f"~{own:.0f}% OWN", color)
-    return html  # ← THE FIX
+    # Batting order badge
+    bat_pos = p.get("batting_order", 0)
+    if bat_pos > 0 and not p.get("is_pitcher"):
+        _, _, bo_label = batting_order_score(bat_pos)
+        if bat_pos <= 2:   bc = "blue"
+        elif bat_pos <= 5: bc = "green"
+        elif bat_pos <= 6: bc = "purple"
+        else:              bc = "teal"
+        label_str = bo_label if bo_label else f"#{bat_pos}"
+        html += b(f"BAT {bat_pos} {label_str}", bc)
+    return html
 
 def own_html(p):
     own = p.get("ownership_pct")
@@ -797,6 +890,7 @@ with st.sidebar:
         odds_key = ""
     st.markdown(f"**Odds API:** {'✅' if odds_key else '⚠️ No key'}")
     st.markdown(f"**Injury Feed:** ✅ Rotowire")
+    st.markdown(f"**Batting Orders:** ✅ MLB Stats API")
     st.markdown(f"**Supabase:** {'✅' if supabase else '❌'}")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
@@ -862,14 +956,16 @@ if not players:
 
 # ── Score ─────────────────────────────────────────────────────────────────────
 with st.spinner("Loading injuries, Vegas lines, scoring..."):
-    injuries    = fetch_mlb_injuries()
-    vegas_lines = fetch_vegas_lines()
-    players     = assign_opp_pitchers(players)
-    players     = score_players(players, injuries, vegas_lines,
+    injuries      = fetch_mlb_injuries()
+    vegas_lines   = fetch_vegas_lines()
+    batting_orders= fetch_batting_orders()
+    players       = assign_opp_pitchers(players)
+    players       = assign_batting_orders(players, batting_orders)
+    players       = score_players(players, injuries, vegas_lines,
                                 st.session_state.manual_out, st.session_state.manual_gtd)
-    players     = estimate_ownership(players)
-    stacks      = detect_stacks(players, vegas_lines)
-    game_locks  = get_game_locks(players)
+    players       = estimate_ownership(players)
+    stacks        = detect_stacks(players, vegas_lines)
+    game_locks    = get_game_locks(players)
 
 TIER_LABELS  = {1:"Tier 1 — Elite",2:"Tier 2 — Star",3:"Tier 3 — Premium",4:"Tier 4 — Mid",5:"Tier 5 — Value",6:"Tier 6 — Dart"}
 TIER_CLASSES = {1:"t1",2:"t2",3:"t3",4:"t4",5:"t5",6:"t6"}
