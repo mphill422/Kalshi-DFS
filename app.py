@@ -441,26 +441,62 @@ DOMED_STADIUMS = {"HOU", "MIA", "TB", "TOR", "ARI", "MIL", "SEA", "MIN", "ATH", 
 
 @st.cache_data(ttl=1800)
 def fetch_weather_for_game(home_team):
+    """Fetch game-time weather using Open-Meteo — same source as MLB model."""
     if home_team in DOMED_STADIUMS:
         return None
     coords = STADIUM_COORDS.get(home_team)
     if not coords: return None
     lat, lon, city = coords
     try:
-        points_url = f"https://api.weather.gov/points/{lat},{lon}"
-        resp = requests.get(points_url, headers={"User-Agent": "DFSTierOptimizer/1.0"}, timeout=10)
+        url = (
+            f"https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lat}&longitude={lon}"
+            f"&hourly=temperature_2m,windspeed_10m,winddirection_10m,weathercode"
+            f"&temperature_unit=fahrenheit&windspeed_unit=mph&timezone=auto&forecast_days=1"
+        )
+        resp = requests.get(url, timeout=10)
         if resp.status_code != 200: return None
         data = resp.json()
-        forecast_url = data["properties"]["forecastHourly"]
-        resp2 = requests.get(forecast_url, headers={"User-Agent": "DFSTierOptimizer/1.0"}, timeout=10)
-        if resp2.status_code != 200: return None
-        periods = resp2.json()["properties"]["periods"]
-        if not periods: return None
-        p = periods[0]
+        hourly = data.get("hourly", {})
+        times = hourly.get("time", [])
+        temps = hourly.get("temperature_2m", [])
+        winds = hourly.get("windspeed_10m", [])
+        dirs  = hourly.get("winddirection_10m", [])
+        codes = hourly.get("weathercode", [])
+        if not times: return None
+
+        # Find current or next hour
+        from datetime import datetime
+        now_str = datetime.now().strftime("%Y-%m-%dT%H:00")
+        idx = 0
+        for i, t in enumerate(times):
+            if t >= now_str:
+                idx = i
+                break
+
+        temp     = temps[idx] if temps else 72
+        wind_mph = winds[idx] if winds else 0
+        wind_deg = dirs[idx]  if dirs  else 0
+        wcode    = codes[idx] if codes else 0
+
+        # Convert wind degrees to cardinal direction
+        dirs_map = ["N","NE","E","SE","S","SW","W","NW"]
+        wind_dir = dirs_map[int((wind_deg + 22.5) / 45) % 8]
+
+        # Weather description from WMO code
+        if wcode == 0: desc = "Clear"
+        elif wcode <= 3: desc = "Partly cloudy"
+        elif wcode <= 48: desc = "Foggy"
+        elif wcode <= 67: desc = "Rain"
+        elif wcode <= 77: desc = "Snow"
+        elif wcode <= 82: desc = "Showers"
+        elif wcode <= 99: desc = "Thunderstorm"
+        else: desc = "Unknown"
+
         return {
-            "temp": p.get("temperature", 0), "wind_speed": p.get("windSpeed", "0 mph"),
-            "wind_dir": p.get("windDirection", ""), "description": p.get("shortForecast", ""),
-            "city": city,
+            "temp": round(temp), "wind_speed": f"{round(wind_mph)} mph",
+            "wind_dir": wind_dir, "description": desc, "city": city,
+            "wind_deg": wind_deg,
         }
     except: return None
 
@@ -538,7 +574,7 @@ def detect_stacks(players, vegas_lines):
     return dict(sorted(stack_scores.items(), key=lambda x: x[1]["score"], reverse=True))
 
 # ── Scoring Engine ────────────────────────────────────────────────────────────
-def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=set()):
+def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=set(), weather_cache={}):
     for tier_num in range(1, 7):
         tier_ps = [p for p in players if p["tier"] == tier_num]
         if not tier_ps: continue
@@ -563,6 +599,13 @@ def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=s
         park = get_park(p["home_team"])
         p["park_factor"] = park["factor"]
         p["park_name"]   = park["name"]
+
+        # Weather
+        weather = weather_cache.get(p.get("home_team", ""))
+        w_adj, w_reason = weather_impact(weather, p["park_name"])
+        p["weather"] = weather
+        p["weather_adj"] = w_adj
+        p["weather_reason"] = w_reason
 
         status = p["inj_status"].upper()
         if "OUT" in status:
@@ -628,6 +671,13 @@ def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=s
             proj_bonus = min((proj - 5) * 1.2, 25)
             cash += proj_bonus; gpp += proj_bonus * 0.7
 
+            # Weather adjustment for outdoor stadiums
+            w_adj = p.get("weather_adj", 0)
+            w_reason = p.get("weather_reason", "")
+            if w_adj != 0 and not p.get("home_team", "") in DOMED_STADIUMS:
+                cash += w_adj; gpp += w_adj * 0.8
+                if w_reason: cr.append(w_reason)
+
             # GPP ownership lever — only boost if projection is above tier floor
             # Low ownership on a bad player is not an edge, it's a trap
             tier_ps_for_floor = [x for x in players if x["tier"] == p["tier"] and not x["is_pitcher"]]
@@ -660,16 +710,15 @@ def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=s
     return players
 
 def assign_opp_pitchers(players):
-    """
-    Match pitchers in the pool to opposing batters.
-    If no pitcher found in pool for a team, fall back to league avg 4.50.
-    """
+    """Match pitchers in pool to opposing batters by team abbreviation."""
     pitcher_map = {}
     for p in players:
         if p["is_pitcher"]:
             era = get_pitcher_era(p["name"])
-            # Store by both their team AND opponent so batters can look up
-            pitcher_map[p["team"]] = {"name": p["name"], "era": era}
+            team = p["team"]
+            team_resolved = TEAM_ALIASES.get(team, team)
+            pitcher_map[team] = {"name": p["name"], "era": era}
+            pitcher_map[team_resolved] = {"name": p["name"], "era": era}
 
     for p in players:
         if not p["is_pitcher"]:
@@ -680,6 +729,7 @@ def assign_opp_pitchers(players):
                 p["opp_pitcher"] = found["name"]
                 p["opp_pitcher_era"] = found["era"]
             else:
+                # No pitcher in pool for this opponent — use ERA dict if we know today's starter
                 p["opp_pitcher"] = ""
                 p["opp_pitcher_era"] = 4.50
     return players
@@ -884,6 +934,14 @@ def make_card(p, mode="cash"):
     park = p.get("park_name", ""); opp_p = p.get("opp_pitcher", "")
     opp_line = f"vs {opp_p}" if opp_p and not p["is_pitcher"] else ""
     sal = p.get("salary", 0); sal_str = f"${sal:,.0f}" if sal else ""
+    weather = p.get("weather")
+    weather_str = ""
+    if weather and p.get("home_team", "") not in DOMED_STADIUMS:
+        temp = weather.get("temp", "")
+        wind = weather.get("wind_speed", "")
+        wdir = weather.get("wind_dir", "")
+        desc = weather.get("description", "")
+        weather_str = f"{temp}°F · {wind} {wdir} · {desc}" if temp else ""
 
     if p["is_pitcher"]: css = "pick-pitcher"; sc_bg = "#1a1a0a"; sc_col = "#f5a623"
     elif mode == "cash": css = "pick-cash"; sc_bg = "#0a2a0a"; sc_col = "#52b788"
@@ -899,6 +957,7 @@ def make_card(p, mode="cash"):
         f"{p['name']} <span style='color:#8892a4;font-size:0.8rem'>{p['position']}</span></div>"
         f"<div class='pmeta'>{p['team']} vs {p['opponent']} {opp_line} · Proj: {proj:.1f} {sal_str}</div>"
         f"<div class='pmeta'>{vegas_str} · {park}</div>"
+        f"{'<div class=\"pmeta\">🌤 ' + weather_str + '</div>' if weather_str else ''}"
         f"<div style='margin-top:5px'>{b_html}</div>"
         f"{o_html}"
         f"{reasons_html}"
@@ -943,6 +1002,7 @@ with st.sidebar:
         odds_key = ""
     st.markdown(f"**Odds API:** {'✅' if odds_key else '⚠️ No key'}")
     st.markdown(f"**Injury Feed:** ✅ Rotowire")
+    st.markdown(f"**Weather:** ✅ Open-Meteo")
     st.markdown(f"**Batting Orders:** ✅ MLB Stats API")
     st.markdown(f"**Supabase:** {'✅' if supabase else '❌'}")
 
@@ -1008,21 +1068,21 @@ if not players:
     st.stop()
 
 # ── Score ─────────────────────────────────────────────────────────────────────
-with st.spinner("Loading injuries, Vegas lines, scoring..."):
+with st.spinner("Loading injuries, Vegas lines, weather, scoring..."):
     injuries      = fetch_mlb_injuries()
     vegas_lines   = fetch_vegas_lines()
-    # DEBUG — remove after confirming keys
-    if vegas_lines:
-        st.sidebar.markdown("**Vegas keys sample:**")
-        st.sidebar.write(list(vegas_lines.keys())[:4])
-    else:
-        err = st.session_state.get("vegas_error", "Unknown error")
-        st.sidebar.error(f"Vegas: {err}")
     batting_orders= fetch_batting_orders()
+    # Fetch weather for each unique home team
+    weather_cache = {}
+    for p in players:
+        ht = p.get("home_team", "")
+        if ht and ht not in weather_cache:
+            weather_cache[ht] = fetch_weather_for_game(ht)
     players       = assign_opp_pitchers(players)
     players       = assign_batting_orders(players, batting_orders)
     players       = score_players(players, injuries, vegas_lines,
-                                st.session_state.manual_out, st.session_state.manual_gtd)
+                                st.session_state.manual_out, st.session_state.manual_gtd,
+                                weather_cache)
     players       = estimate_ownership(players)
     stacks        = detect_stacks(players, vegas_lines)
     game_locks    = get_game_locks(players)
