@@ -479,6 +479,8 @@ def fetch_real_ownership():
     return ownership
 
 
+@st.cache_data(ttl=1800)
+def fetch_weather_for_game(home_team):
     """Fetch game-time weather using Open-Meteo — same source as MLB model."""
     if home_team in DOMED_STADIUMS:
         return None
