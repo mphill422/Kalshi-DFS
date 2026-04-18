@@ -439,8 +439,46 @@ STADIUM_COORDS = {
 # Domed/retractable stadiums — weather irrelevant
 DOMED_STADIUMS = {"HOU", "MIA", "TB", "TOR", "ARI", "MIL", "SEA", "MIN", "ATH", "OAK"}
 
-@st.cache_data(ttl=1800)
-def fetch_weather_for_game(home_team):
+@st.cache_data(ttl=600)
+def fetch_real_ownership():
+    """
+    Scrape projected ownership from FantasyTeamAdvice (free tier).
+    Returns dict: {player_name_lower: ownership_pct}
+    """
+    ownership = {}
+    try:
+        url = "https://fantasyteamadvice.com/ownerships?sport=mlb"
+        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return ownership
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Find all player rows with ownership %
+        # Pattern: player name link followed by ownership percentage
+        for link in soup.find_all("a", href=lambda h: h and "/mlb/players/" in h):
+            name = link.get_text(strip=True)
+            if not name: continue
+            # Look for percentage near this element
+            parent = link.find_parent()
+            if not parent: continue
+            text = parent.get_text(" ", strip=True)
+            import re
+            pct_match = re.search(r'(\d+\.?\d*)%', text)
+            if pct_match:
+                pct = float(pct_match.group(1))
+                ownership[name.lower()] = pct
+                # Also store last name
+                parts = name.lower().split()
+                if parts:
+                    ownership[parts[-1]] = pct
+    except:
+        pass
+    return ownership
+
+
     """Fetch game-time weather using Open-Meteo — same source as MLB model."""
     if home_team in DOMED_STADIUMS:
         return None
@@ -1131,6 +1169,7 @@ with st.sidebar:
     st.markdown(f"**Injury Feed:** ✅ Rotowire")
     st.markdown(f"**Weather:** ✅ Open-Meteo")
     st.markdown(f"**Batting Orders:** ✅ MLB Stats API")
+    st.markdown(f"**Ownership:** ✅ FTA Projections")
     st.markdown(f"**Supabase:** {'✅' if supabase else '❌'}")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
@@ -1196,10 +1235,11 @@ if not players:
 
 # ── Score ─────────────────────────────────────────────────────────────────────
 with st.spinner("Loading injuries, Vegas lines, weather, scoring..."):
-    injuries         = fetch_mlb_injuries()
-    vegas_lines      = fetch_vegas_lines()
-    batting_orders   = fetch_batting_orders()
-    probable_pitchers= fetch_probable_pitchers()
+    injuries          = fetch_mlb_injuries()
+    vegas_lines       = fetch_vegas_lines()
+    batting_orders    = fetch_batting_orders()
+    probable_pitchers = fetch_probable_pitchers()
+    real_ownership    = fetch_real_ownership()
     # Fetch weather for each unique home team
     weather_cache = {}
     for p in players:
@@ -1208,12 +1248,26 @@ with st.spinner("Loading injuries, Vegas lines, weather, scoring..."):
             weather_cache[ht] = fetch_weather_for_game(ht)
     players = assign_opp_pitchers(players, probable_pitchers)
     players = assign_batting_orders(players, batting_orders)
+    # Apply real ownership where available
+    for p in players:
+        name_lower = p["name"].lower()
+        last = name_lower.split()[-1] if name_lower else ""
+        own_pct = real_ownership.get(name_lower) or real_ownership.get(last)
+        if own_pct is not None:
+            p["ownership_pct"] = own_pct
     players = score_players(players, injuries, vegas_lines,
                             st.session_state.manual_out, st.session_state.manual_gtd,
                             weather_cache)
     players = monte_carlo_simulate(players)
     players = estimate_ownership(players)
-    stacks  = detect_stacks(players, vegas_lines)
+    # Re-apply real ownership after estimate (don't let estimate overwrite real data)
+    for p in players:
+        name_lower = p["name"].lower()
+        last = name_lower.split()[-1] if name_lower else ""
+        own_pct = real_ownership.get(name_lower) or real_ownership.get(last)
+        if own_pct is not None:
+            p["ownership_pct"] = own_pct
+    stacks     = detect_stacks(players, vegas_lines)
     game_locks = get_game_locks(players)
 
 TIER_LABELS  = {1:"Tier 1 — Elite",2:"Tier 2 — Star",3:"Tier 3 — Premium",4:"Tier 4 — Mid",5:"Tier 5 — Value",6:"Tier 6 — Dart"}
