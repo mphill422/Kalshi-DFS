@@ -779,18 +779,23 @@ def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=s
             # Low ownership on a bad player is not an edge, it's a trap
             tier_ps_for_floor = [x for x in players if x["tier"] == p["tier"] and not x["is_pitcher"]]
             tier_projs = sorted([x["dk_projection"] for x in tier_ps_for_floor], reverse=True)
-            # Floor = must be in top 75% of tier by projection to get ownership boost
-            proj_floor = tier_projs[int(len(tier_projs) * 0.75)] if tier_projs else 0
+            # Floor = must be in top 50% of tier by projection to get ownership boost
+            proj_floor = tier_projs[int(len(tier_projs) * 0.50)] if tier_projs else 0
             above_floor = proj >= proj_floor
+            # Is this the chalk #1 pick in the tier?
+            is_chalk_top = tier_projs and proj >= tier_projs[0] * 0.98
 
             if own < 0.4:
-                if above_floor: gpp += 14; gr.append("Low ownership + upside — GPP leverage 🎯")
-                else: gpp += 4; gr.append("Low ownership but low floor — small GPP boost")
+                if above_floor and not is_chalk_top: gpp += 18; gr.append("Low ownership + upside — GPP leverage 🎯")
+                elif above_floor and is_chalk_top: gpp += 6; gr.append("Top proj but low own — mild GPP value")
+                else: gpp -= 10; gr.append("Low ownership but weak projection — GPP trap")
             elif own < 0.6:
-                if above_floor: gpp += 7
-                else: gpp += 2
+                if above_floor and not is_chalk_top: gpp += 10
+                elif above_floor: gpp += 4
+                else: gpp -= 3
             else:
-                gpp -= 6; gr.append("High chalk — fade has GPP merit")
+                if is_chalk_top: gpp -= 12; gr.append("Chalk #1 — heavy ownership, fade in GPP")
+                else: gpp -= 6; gr.append("High chalk — fade has GPP merit")
 
             # Batting order position
             bat_pos = p.get("batting_order", 0)
