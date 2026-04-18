@@ -573,7 +573,64 @@ def detect_stacks(players, vegas_lines):
         }
     return dict(sorted(stack_scores.items(), key=lambda x: x[1]["score"], reverse=True))
 
-# ── Scoring Engine ────────────────────────────────────────────────────────────
+# ── Monte Carlo Simulation ────────────────────────────────────────────────────
+def monte_carlo_simulate(players, n_sims=1000):
+    """
+    Simulate each player's DK score n_sims times.
+    Uses projection as mean, with variance based on position and matchup.
+    Returns floor (10th pct), median (50th pct), ceiling (90th pct) for each player.
+    """
+    rng = np.random.default_rng(42)
+
+    for p in players:
+        proj = p["dk_projection"]
+        if proj <= 0:
+            p["sim_floor"] = 0; p["sim_median"] = 0; p["sim_ceiling"] = 0
+            p["sim_cash_score"] = 0; p["sim_gpp_score"] = 0
+            continue
+
+        # Variance model — higher variance for lower projected players
+        # Pitcher variance is lower (more predictable)
+        if p["is_pitcher"]:
+            std = proj * 0.25
+        else:
+            # Batters have high variance — a single HR changes everything
+            base_std = proj * 0.45
+            # Park factor increases variance
+            pf = p.get("park_factor", 1.0)
+            std = base_std * (1 + (pf - 1.0) * 0.5)
+            # High O/U games = more variance
+            total = p.get("vegas_total", 8.5) or 8.5
+            if total >= 10: std *= 1.15
+            elif total <= 7: std *= 0.85
+
+        # Simulate scores — truncated at 0 (can't score negative)
+        sims = rng.normal(loc=proj, scale=std, size=n_sims)
+        sims = np.maximum(sims, 0)
+
+        p["sim_floor"]   = round(float(np.percentile(sims, 10)), 1)
+        p["sim_median"]  = round(float(np.percentile(sims, 50)), 1)
+        p["sim_ceiling"] = round(float(np.percentile(sims, 90)), 1)
+
+        # Cash score = weighted toward floor (safety)
+        # GPP score = weighted toward ceiling (upside)
+        own = p.get("ownership_pct", 20) or 20
+        own_factor = 1.0 - (own / 100) * 0.3  # High ownership = slight GPP penalty
+
+        p["sim_cash_score"] = round(
+            float(np.percentile(sims, 10) * 0.4 +
+                  np.percentile(sims, 50) * 0.5 +
+                  np.percentile(sims, 90) * 0.1), 1
+        )
+        p["sim_gpp_score"] = round(
+            float(np.percentile(sims, 10) * 0.1 +
+                  np.percentile(sims, 50) * 0.3 +
+                  np.percentile(sims, 90) * 0.6) * own_factor, 1
+        )
+
+    return players
+
+
 def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=set(), weather_cache={}):
     for tier_num in range(1, 7):
         tier_ps = [p for p in players if p["tier"] == tier_num]
@@ -709,8 +766,52 @@ def score_players(players, injuries, vegas_lines, manual_out=set(), manual_gtd=s
 
     return players
 
-def assign_opp_pitchers(players):
-    """Match pitchers in pool to opposing batters by team abbreviation."""
+@st.cache_data(ttl=1800)
+def fetch_probable_pitchers():
+    """
+    Fetch today's probable starters from MLB Stats API.
+    Returns dict: {team_abbrev: {"name": str, "era": float}}
+    """
+    starters = {}
+    try:
+        today = date.today().strftime("%Y-%m-%d")
+        url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}&hydrate=probablePitcher"
+        resp = requests.get(url, timeout=12)
+        if resp.status_code != 200:
+            return starters
+        data = resp.json()
+
+        # MLB team ID → DK abbreviation
+        MLB_ID_TO_ABBREV = {
+            108:"LAA", 109:"ARI", 110:"BAL", 111:"BOS", 112:"CHC",
+            113:"CIN", 114:"CLE", 115:"COL", 116:"DET", 117:"HOU",
+            118:"KC",  119:"LAD", 120:"WSH", 121:"NYM", 133:"OAK",
+            134:"PIT", 135:"SD",  136:"SEA", 137:"SF",  138:"STL",
+            139:"TB",  140:"TEX", 141:"TOR", 142:"MIN", 143:"PHI",
+            144:"ATL", 145:"CWS", 146:"MIA", 147:"NYY", 158:"MIL",
+        }
+
+        for game_date in data.get("dates", []):
+            for game in game_date.get("games", []):
+                for side in ["home", "away"]:
+                    team_id = game.get(f"{side}Team", {}).get("id")
+                    pitcher = game.get(f"{side}ProbablePitcher", {})
+                    if not pitcher or not team_id: continue
+                    abbrev = MLB_ID_TO_ABBREV.get(team_id)
+                    if not abbrev: continue
+                    name = pitcher.get("fullName", "")
+                    era = get_pitcher_era(name)
+                    starters[abbrev] = {"name": name, "era": era}
+    except:
+        pass
+    return starters
+
+def assign_opp_pitchers(players, probable_pitchers={}):
+    """
+    Match pitchers to opposing batters.
+    Priority: 1) pitcher in DK pool, 2) MLB Stats API probable, 3) default 4.50
+    """
+    # Build from DK pool first
     pitcher_map = {}
     for p in players:
         if p["is_pitcher"]:
@@ -719,6 +820,11 @@ def assign_opp_pitchers(players):
             team_resolved = TEAM_ALIASES.get(team, team)
             pitcher_map[team] = {"name": p["name"], "era": era}
             pitcher_map[team_resolved] = {"name": p["name"], "era": era}
+
+    # Supplement with probable pitchers from API
+    for abbrev, data in probable_pitchers.items():
+        if abbrev not in pitcher_map:
+            pitcher_map[abbrev] = data
 
     for p in players:
         if not p["is_pitcher"]:
@@ -729,7 +835,6 @@ def assign_opp_pitchers(players):
                 p["opp_pitcher"] = found["name"]
                 p["opp_pitcher_era"] = found["era"]
             else:
-                # No pitcher in pool for this opponent — use ERA dict if we know today's starter
                 p["opp_pitcher"] = ""
                 p["opp_pitcher_era"] = 4.50
     return players
@@ -948,6 +1053,30 @@ def make_card(p, mode="cash"):
     else: css = "pick-gpp"; sc_bg = "#2d1040"; sc_col = "#ce93d8"
     if "OUT" in p.get("inj_status", "").upper(): css = "pick-out"
 
+    # Monte Carlo display
+    floor   = p.get("sim_floor", 0)
+    median  = p.get("sim_median", 0)
+    ceiling = p.get("sim_ceiling", 0)
+    mc_score = p.get("sim_cash_score" if mode == "cash" else "sim_gpp_score", 0)
+    has_mc = floor > 0 or ceiling > 0
+
+    score_html = (
+        f"<div style='text-align:center;min-width:60px;margin-left:8px'>"
+        f"<div style='font-size:0.58rem;color:#8892a4'>CEIL</div>"
+        f"<div style='font-family:Barlow Condensed,sans-serif;font-size:0.95rem;font-weight:700;color:{sc_col}'>{ceiling:.0f}</div>"
+        f"<div style='font-size:0.58rem;color:#8892a4;margin-top:1px'>MED</div>"
+        f"<div style='font-family:Barlow Condensed,sans-serif;font-size:1.1rem;font-weight:800;color:{sc_col}'>{median:.0f}</div>"
+        f"<div style='font-size:0.58rem;color:#8892a4;margin-top:1px'>FLOR</div>"
+        f"<div style='font-family:Barlow Condensed,sans-serif;font-size:0.85rem;font-weight:700;color:#8892a4'>{floor:.0f}</div>"
+        f"<div style='font-size:0.55rem;color:#8892a4;margin-top:2px'>{mode.upper()}</div>"
+        f"</div>"
+    ) if has_mc else (
+        f"<div style='text-align:center;min-width:48px;margin-left:8px'>"
+        f"<div style='background:{sc_bg};border-radius:50%;width:44px;height:44px;display:flex;align-items:center;justify-content:center;font-family:Barlow Condensed,sans-serif;font-size:1.1rem;font-weight:700;color:{sc_col}'>{int(mc_score)}</div>"
+        f"<div style='font-size:0.6rem;color:#8892a4;margin-top:2px'>{mode.upper()}</div>"
+        f"</div>"
+    )
+
     return (
         f"<div class='{css}'>"
         f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
@@ -962,10 +1091,8 @@ def make_card(p, mode="cash"):
         f"{o_html}"
         f"{reasons_html}"
         f"</div>"
-        f"<div style='text-align:center;min-width:48px;margin-left:8px'>"
-        f"<div style='background:{sc_bg};border-radius:50%;width:44px;height:44px;display:flex;align-items:center;justify-content:center;font-family:Barlow Condensed,sans-serif;font-size:1.1rem;font-weight:700;color:{sc_col}'>{score}</div>"
-        f"<div style='font-size:0.6rem;color:#8892a4;margin-top:2px'>{mode.upper()}</div>"
-        f"</div></div>"
+        f"{score_html}"
+        f"</div>"
         f"</div>"
     )
 
@@ -1069,23 +1196,25 @@ if not players:
 
 # ── Score ─────────────────────────────────────────────────────────────────────
 with st.spinner("Loading injuries, Vegas lines, weather, scoring..."):
-    injuries      = fetch_mlb_injuries()
-    vegas_lines   = fetch_vegas_lines()
-    batting_orders= fetch_batting_orders()
+    injuries         = fetch_mlb_injuries()
+    vegas_lines      = fetch_vegas_lines()
+    batting_orders   = fetch_batting_orders()
+    probable_pitchers= fetch_probable_pitchers()
     # Fetch weather for each unique home team
     weather_cache = {}
     for p in players:
         ht = p.get("home_team", "")
         if ht and ht not in weather_cache:
             weather_cache[ht] = fetch_weather_for_game(ht)
-    players       = assign_opp_pitchers(players)
-    players       = assign_batting_orders(players, batting_orders)
-    players       = score_players(players, injuries, vegas_lines,
-                                st.session_state.manual_out, st.session_state.manual_gtd,
-                                weather_cache)
-    players       = estimate_ownership(players)
-    stacks        = detect_stacks(players, vegas_lines)
-    game_locks    = get_game_locks(players)
+    players = assign_opp_pitchers(players, probable_pitchers)
+    players = assign_batting_orders(players, batting_orders)
+    players = score_players(players, injuries, vegas_lines,
+                            st.session_state.manual_out, st.session_state.manual_gtd,
+                            weather_cache)
+    players = monte_carlo_simulate(players)
+    players = estimate_ownership(players)
+    stacks  = detect_stacks(players, vegas_lines)
+    game_locks = get_game_locks(players)
 
 TIER_LABELS  = {1:"Tier 1 — Elite",2:"Tier 2 — Star",3:"Tier 3 — Premium",4:"Tier 4 — Mid",5:"Tier 5 — Value",6:"Tier 6 — Dart"}
 TIER_CLASSES = {1:"t1",2:"t2",3:"t3",4:"t4",5:"t5",6:"t6"}
@@ -1122,8 +1251,8 @@ with tab1:
     for tier_num in range(1, 7):
         tier_ps = [p for p in players if p["tier"] == tier_num]
         if not tier_ps: continue
-        cash_s = sorted(tier_ps, key=lambda x: x["cash_score"], reverse=True)
-        gpp_s  = sorted(tier_ps, key=lambda x: x["gpp_score"],  reverse=True)
+        cash_s = sorted(tier_ps, key=lambda x: x.get("sim_cash_score", x["cash_score"]), reverse=True)
+        gpp_s  = sorted(tier_ps, key=lambda x: x.get("sim_gpp_score",  x["gpp_score"]),  reverse=True)
 
         with st.expander(f"{TIER_LABELS[tier_num]}", expanded=True):
             pitchers     = [p for p in tier_ps if p["is_pitcher"]]
@@ -1153,10 +1282,10 @@ with tab1:
 
             if show_all:
                 rows = [{"Player":p["name"],"Bat#":p.get("batting_order","") or "","Pos":p["position"],"Team":p["team"],"vs":p["opponent"],
-                         "Proj":p["dk_projection"],"Cash":p["cash_score"],
-                         "GPP":p["gpp_score"],"Park PF":p.get("park_factor",""),
-                         "Opp ERA":p.get("opp_pitcher_era",""),"O/U":p.get("vegas_total","") or "N/A",
-                         "Own%":p.get("ownership_pct",""),"Inj":p.get("inj_status","")} for p in cash_s]
+                         "Proj":p["dk_projection"],"Floor":p.get("sim_floor",""),"Median":p.get("sim_median",""),"Ceiling":p.get("sim_ceiling",""),
+                         "Cash":p.get("sim_cash_score",p["cash_score"]),"GPP":p.get("sim_gpp_score",p["gpp_score"]),
+                         "Park PF":p.get("park_factor",""),"Opp ERA":p.get("opp_pitcher_era",""),
+                         "O/U":p.get("vegas_total","") or "N/A","Own%":p.get("ownership_pct",""),"Inj":p.get("inj_status","")} for p in cash_s]
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 # ── TAB 2: Game Environment ───────────────────────────────────────────────────
