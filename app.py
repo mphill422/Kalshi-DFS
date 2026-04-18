@@ -1312,8 +1312,32 @@ with tab1:
     for tier_num in range(1, 7):
         tier_ps = [p for p in players if p["tier"] == tier_num]
         if not tier_ps: continue
+
+        # Cash: highest floor player — sim_cash_score weighted toward floor
         cash_s = sorted(tier_ps, key=lambda x: x.get("sim_cash_score", x["cash_score"]), reverse=True)
-        gpp_s  = sorted(tier_ps, key=lambda x: x.get("sim_gpp_score",  x["gpp_score"]),  reverse=True)
+
+        # GPP: pure ceiling × (1 - ownership) formula
+        # High ceiling + low ownership = best GPP play
+        # Also apply batting order bonus for spots 1-4
+        def gpp_rank(p):
+            if p["is_pitcher"]:
+                return p.get("sim_gpp_score", p["gpp_score"])
+            ceiling = p.get("sim_ceiling", p["dk_projection"] * 1.5)
+            own = (p.get("ownership_pct") or 30) / 100
+            # Ownership leverage — reward low ownership
+            own_factor = 1.0 - (own * 0.6)
+            # Batting order bonus — spots 1-4 get slight boost
+            bat_pos = p.get("batting_order", 0)
+            bat_bonus = 1.10 if bat_pos in [3, 4] else (1.07 if bat_pos in [1, 2, 5] else 1.0)
+            # Must be top half of tier by projection to qualify
+            tier_batters = [x for x in tier_ps if not x["is_pitcher"]]
+            tier_projs = sorted([x["dk_projection"] for x in tier_batters], reverse=True)
+            proj_median = tier_projs[len(tier_projs)//2] if tier_projs else 0
+            if p["dk_projection"] < proj_median:
+                return ceiling * own_factor * bat_bonus * 0.5  # penalty for bottom half
+            return ceiling * own_factor * bat_bonus
+
+        gpp_s = sorted(tier_ps, key=gpp_rank, reverse=True)
 
         with st.expander(f"{TIER_LABELS[tier_num]}", expanded=True):
             pitchers     = [p for p in tier_ps if p["is_pitcher"]]
