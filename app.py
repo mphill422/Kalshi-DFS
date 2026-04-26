@@ -533,41 +533,47 @@ def parse_nba_csv(uploaded_file):
     """Parse RotoWire NBA CSV for DraftKings classic format."""
     try:
         df = pd.read_csv(uploaded_file)
+        # Normalize column names
+        df.columns = [c.strip() for c in df.columns]
         players = []
         for _, row in df.iterrows():
-            # RotoWire columns: Name, Position, Team, Opp, Game, Salary, FPPG, Proj Own%
-            name = str(row.get("Name", row.get("Player", "")) or "").strip()
+            name = str(row.get("PLAYER", row.get("Name", row.get("Player", ""))) or "").strip()
             if not name: continue
-            pos_raw = str(row.get("Position", row.get("Pos", "")) or "").strip().upper()
-            pos = pos_raw.split("/")[0].split("-")[0]  # Take first position
-            team = str(row.get("Team", row.get("TeamAbbrev", "")) or "").strip()
-            opp  = str(row.get("Opp", row.get("Opponent", "")) or "").strip().lstrip("@v")
-            game_info = str(row.get("Game", row.get("Game Info", "")) or "")
-            salary = float(str(row.get("Salary", row.get("Sal", 0)) or "0").replace("$","").replace(",","") or 0)
-            proj   = float(row.get("FPPG", row.get("Proj", row.get("FPts", 0))) or 0)
-            own    = float(row.get("Proj Own%", row.get("Own%", row.get("Own", 15))) or 15)
-            if isinstance(own, str): own = float(own.replace("%","") or 15)
 
-            # Parse game time
-            game_time_str = ""
-            if game_info:
-                parts = game_info.split()
-                for part in parts:
-                    if "PM" in part.upper() or "AM" in part.upper():
-                        game_time_str = part.upper()
-                        break
-
-            # Validate position for DK NBA
+            # Position — RotoWire uses multi-position like PF/F/UTIL
+            pos_raw = str(row.get("POS", row.get("Position", row.get("Pos", ""))) or "").strip().upper()
+            # Take first valid DK position
             valid_pos = ["PG","SG","SF","PF","C"]
-            if pos not in valid_pos: continue
+            pos = ""
+            for part in pos_raw.replace("-","/").split("/"):
+                part = part.strip()
+                if part in valid_pos: pos = part; break
+            if not pos: continue  # Skip if no valid position found
+
+            team = str(row.get("TEAM", row.get("Team", "")) or "").strip()
+            opp  = str(row.get("OPP", row.get("Opp", "")) or "").strip().lstrip("@v@ ")
+            salary = float(str(row.get("SAL", row.get("Salary", 0)) or "0").replace("$","").replace(",","") or 0)
+            proj   = float(row.get("FPTS", row.get("Proj", row.get("FPPG", 0))) or 0)
+            # Ownership — RotoWire uses RST%
+            own_raw = row.get("RST%", row.get("Own%", row.get("Proj Own%", row.get("Own", 15))))
+            try: own = float(str(own_raw or 15).replace("%",""))
+            except: own = 15.0
+            # Injury — RotoWire uses INJ column
+            inj_status = str(row.get("INJ", row.get("Status", "")) or "").strip().upper()
+            # Game time
+            game_time_str = str(row.get("Time (ET)", row.get("Time", "")) or "").strip()
+            # Clean up time format
+            if game_time_str and ":" in game_time_str:
+                game_time_str = game_time_str.replace(" ET","").strip()
+
             if salary < 3000 or proj <= 0: continue
 
             players.append({
                 "name": name, "pos": pos, "team": team, "opp": opp,
                 "salary": salary, "proj": proj, "own": own,
                 "dk_projection": proj, "ownership_pct": own,
-                "game_time_str": game_time_str, "game_info": game_info,
-                "inj_status": "", "inj_note": "",
+                "game_time_str": game_time_str, "game_info": f"{team}@{opp}",
+                "inj_status": inj_status, "inj_note": "",
                 "vegas_total": None, "vegas_spread": None,
                 "sim_floor": 0, "sim_median": 0, "sim_ceiling": 0,
                 "sim_cash_score": 0, "sim_gpp_score": 0,
