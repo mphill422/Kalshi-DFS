@@ -1075,7 +1075,7 @@ if "sport_mode" not in st.session_state: st.session_state.sport_mode = "🏀 NBA
 if "nba_players" not in st.session_state: st.session_state.nba_players = []
 if "nba_locked" not in st.session_state: st.session_state.nba_locked = set()
 if "nba_excluded" not in st.session_state: st.session_state.nba_excluded = set()
-if "nba_lineup_gpp" not in st.session_state: st.session_state.nba_lineup_gpp = []
+if "nba_selected_times" not in st.session_state: st.session_state.nba_selected_times = []
 if "nba_lineup_cash" not in st.session_state: st.session_state.nba_lineup_cash = []
 if "mlb_players" not in st.session_state: st.session_state.mlb_players = []
 if "manual_out" not in st.session_state: st.session_state.manual_out = set()
@@ -1105,7 +1105,23 @@ with st.sidebar:
     st.markdown("---")
 
     if sport_mode == "🏀 NBA Classic":
-        st.markdown("### ⚙️ NBA Settings")
+        # Game time slate filter
+        if st.session_state.nba_players:
+            all_times = sorted(set(p["game_time_str"] for p in st.session_state.nba_players if p["game_time_str"]))
+            if all_times:
+                st.markdown("### 🕐 Slate Filter")
+                selected_times = st.multiselect(
+                    "Select games to include",
+                    options=all_times,
+                    default=all_times,
+                    help="Deselect early games to play only the late slate"
+                )
+                # Filter players by selected times
+                if selected_times:
+                    st.session_state.nba_selected_times = selected_times
+                else:
+                    st.session_state.nba_selected_times = all_times
+            st.markdown("---")
         nba_stack_auto = st.toggle("Auto-detect stack game", value=True)
         nba_stack_team = ""
         if not nba_stack_auto and st.session_state.nba_players:
@@ -1191,6 +1207,15 @@ if sport_mode == "🏀 NBA Classic":
 
         nba_players = st.session_state.nba_players
         if not nba_players: st.stop()
+
+        # Apply slate filter
+        selected_times = st.session_state.nba_selected_times
+        if selected_times:
+            nba_players = [p for p in nba_players if p["game_time_str"] in selected_times or not p["game_time_str"]]
+        
+        if not nba_players:
+            st.warning("No players in selected slate. Adjust the slate filter in the sidebar.")
+            st.stop()
 
         # Load all data
         with st.spinner("Loading injuries, Vegas lines, ownership, simulating..."):
