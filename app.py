@@ -560,11 +560,24 @@ def parse_nba_csv(uploaded_file):
             except: own = 15.0
             # Injury — RotoWire uses INJ column
             inj_status = str(row.get("INJ", row.get("Status", "")) or "").strip().upper()
-            # Game time
-            game_time_str = str(row.get("Time (ET)", row.get("Time", "")) or "").strip()
-            # Clean up time format
-            if game_time_str and ":" in game_time_str:
-                game_time_str = game_time_str.replace(" ET","").strip()
+            # Game time — convert to 12hr ET format
+            game_time_raw = str(row.get("Time (ET)", row.get("Time", "")) or "").strip()
+            game_time_str = ""
+            if game_time_raw:
+                try:
+                    # Handle formats like "2026-04-26 19:00:00" or "19:00" or "7:00 PM"
+                    if " " in game_time_raw and "-" in game_time_raw:
+                        # Full datetime string
+                        dt = datetime.strptime(game_time_raw.split(".")[0], "%Y-%m-%d %H:%M:%S") if ":" in game_time_raw.split(" ")[1] else datetime.strptime(game_time_raw, "%Y-%m-%d %H:%M")
+                        game_time_str = dt.strftime("%-I:%M %p ET")
+                    elif ":" in game_time_raw:
+                        # Time only like "19:00"
+                        t = datetime.strptime(game_time_raw.replace(" ET","").strip(), "%H:%M")
+                        game_time_str = t.strftime("%-I:%M %p ET")
+                    else:
+                        game_time_str = game_time_raw
+                except:
+                    game_time_str = game_time_raw
 
             if salary < 3000 or proj <= 0: continue
 
@@ -598,10 +611,10 @@ def nba_cash_score(player):
     """Cash scoring: weighted toward floor and median (consistency)."""
     return player.get("sim_cash_score", player["proj"])
 
-def optimize_nba_lineup(players, mode="gpp", locked_names=set(), excluded_names=set(), stack_team=None):
+def optimize_nba_lineup(players, mode="gpp", locked_names=set(), excluded_names=set(), stack_team=None, regen=0):
     """
     Build optimal NBA DK lineup using greedy algorithm.
-    mode: 'gpp' or 'cash'
+    regen: iteration count — each increment rotates out top ownership player for variety
     """
     # Filter excluded
     pool = [p for p in players
@@ -616,6 +629,14 @@ def optimize_nba_lineup(players, mode="gpp", locked_names=set(), excluded_names=
 
     # Sort by score
     pool_sorted = sorted(pool, key=lambda x: x["_score"], reverse=True)
+
+    # For regenerate — exclude the top N highest ownership non-locked players
+    # This forces lineup variation on each regenerate click
+    if regen > 0:
+        non_locked = [p for p in pool_sorted if p["name"] not in locked_names]
+        by_own = sorted(non_locked, key=lambda x: x.get("ownership_pct", 0), reverse=True)
+        regen_excluded = set(p["name"] for p in by_own[:regen])
+        pool_sorted = [p for p in pool_sorted if p["name"] not in regen_excluded or p["name"] in locked_names]
 
     lineup = [None] * 8
     used_names = set()
@@ -712,7 +733,7 @@ def render_nba_lineup(lineup, total_salary, mode="gpp"):
         <div class='lineup-slot'>
           <span class='slot-label'>{slot}</span>
           <div style='flex:1;margin-left:8px'>
-            <span style='font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:1rem'>{p['name']}</span>
+            <span style='font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:1rem;color:#ffffff'>{p['name']}</span>
             <span style='color:#8892a4;font-size:0.78rem;margin-left:6px'>{p['pos']} · {p['team']} vs {p['opp']} {total_str}</span>
           </div>
           <span style='color:#8892a4;font-size:0.8rem;margin-right:12px'>${p['salary']:,}</span>
@@ -1077,7 +1098,8 @@ if "nba_locked" not in st.session_state: st.session_state.nba_locked = set()
 if "nba_excluded" not in st.session_state: st.session_state.nba_excluded = set()
 if "nba_lineup_gpp" not in st.session_state: st.session_state.nba_lineup_gpp = []
 if "nba_lineup_cash" not in st.session_state: st.session_state.nba_lineup_cash = []
-if "nba_selected_times" not in st.session_state: st.session_state.nba_selected_times = []
+if "nba_regen_gpp" not in st.session_state: st.session_state.nba_regen_gpp = 0
+if "nba_regen_cash" not in st.session_state: st.session_state.nba_regen_cash = 0
 if "mlb_players" not in st.session_state: st.session_state.mlb_players = []
 if "manual_out" not in st.session_state: st.session_state.manual_out = set()
 if "manual_gtd" not in st.session_state: st.session_state.manual_gtd = set()
@@ -1275,33 +1297,39 @@ if sport_mode == "🏀 NBA Classic":
         # Generate lineups button
         col_g, col_c = st.columns(2)
         with col_g:
-            if st.button("⚡ Generate GPP Lineup", use_container_width=True):
+            gpp_label = "⚡ Generate GPP Lineup" if st.session_state.nba_regen_gpp == 0 else f"🔄 Regenerate GPP (v{st.session_state.nba_regen_gpp + 1})"
+            if st.button(gpp_label, use_container_width=True):
                 lineup, sal = optimize_nba_lineup(
                     nba_players, mode="gpp",
                     locked_names=st.session_state.nba_locked,
                     excluded_names=st.session_state.nba_excluded,
-                    stack_team=stack_team
+                    stack_team=stack_team,
+                    regen=st.session_state.nba_regen_gpp
                 )
                 st.session_state.nba_lineup_gpp = lineup
-                st.session_state.nba_lineup_cash_sal = sal
+                st.session_state.nba_lineup_gpp_sal = sal
+                st.session_state.nba_regen_gpp += 1
         with col_c:
-            if st.button("💵 Generate Cash Lineup", use_container_width=True):
+            cash_label = "💵 Generate Cash Lineup" if st.session_state.nba_regen_cash == 0 else f"🔄 Regenerate Cash (v{st.session_state.nba_regen_cash + 1})"
+            if st.button(cash_label, use_container_width=True):
                 lineup, sal = optimize_nba_lineup(
                     nba_players, mode="cash",
                     locked_names=st.session_state.nba_locked,
                     excluded_names=st.session_state.nba_excluded,
-                    stack_team=None
+                    stack_team=None,
+                    regen=st.session_state.nba_regen_cash
                 )
                 st.session_state.nba_lineup_cash = lineup
-                st.session_state.nba_lineup_cash_sal2 = sal
+                st.session_state.nba_lineup_cash_sal = sal
+                st.session_state.nba_regen_cash += 1
 
         # Show built lineups
         if st.session_state.nba_lineup_gpp:
             render_nba_lineup(st.session_state.nba_lineup_gpp,
-                              getattr(st.session_state, "nba_lineup_cash_sal", 50000), "gpp")
+                              getattr(st.session_state, "nba_lineup_gpp_sal", 50000), "gpp")
         if st.session_state.nba_lineup_cash:
             render_nba_lineup(st.session_state.nba_lineup_cash,
-                              getattr(st.session_state, "nba_lineup_cash_sal2", 50000), "cash")
+                              getattr(st.session_state, "nba_lineup_cash_sal", 50000), "cash")
 
         # Top picks by position
         st.markdown("---")
@@ -1378,7 +1406,7 @@ if sport_mode == "🏀 NBA Classic":
         st.markdown("### 🏆 My Lineups")
         if st.session_state.nba_lineup_gpp:
             render_nba_lineup(st.session_state.nba_lineup_gpp,
-                              getattr(st.session_state,"nba_lineup_cash_sal",50000), "gpp")
+                              getattr(st.session_state,"nba_lineup_gpp_sal",50000), "gpp")
             # Export
             if all(st.session_state.nba_lineup_gpp):
                 names = [p["name"] for p in st.session_state.nba_lineup_gpp if p]
@@ -1387,7 +1415,7 @@ if sport_mode == "🏀 NBA Classic":
             st.info("Generate a lineup in the Optimizer tab.")
         if st.session_state.nba_lineup_cash:
             render_nba_lineup(st.session_state.nba_lineup_cash,
-                              getattr(st.session_state,"nba_lineup_cash_sal2",50000), "cash")
+                              getattr(st.session_state,"nba_lineup_cash_sal",50000), "cash")
 
     with tab4:
         st.markdown("### 🔄 Late Swap — Injury Monitor")
