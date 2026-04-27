@@ -666,13 +666,23 @@ def optimize_nba_lineup(players, mode="gpp", locked_names=set(), excluded_names=
     # 3. Fill remaining slots greedily
     for i, slot in enumerate(NBA_ROSTER):
         if lineup[i] is not None: continue
+        remaining_empty = [j for j in range(i, len(NBA_ROSTER)) if lineup[j] is None]
+        n_remaining = len(remaining_empty)
         for p in pool_sorted:
             if p["name"] in used_names: continue
             if p["pos"] not in slot["positions"]: continue
-            remaining_slots = sum(1 for j, x in enumerate(lineup) if x is None and j > i)
-            min_remaining = remaining_slots * 3500
-            if total_salary + p["salary"] + min_remaining > NBA_SALARY_CAP: continue
+            # Reserve minimum $3500 per remaining empty slot
+            min_reserve = (n_remaining - 1) * 3500
+            if total_salary + p["salary"] + min_reserve > NBA_SALARY_CAP: continue
             lineup[i] = p; used_names.add(p["name"]); total_salary += p["salary"]; break
+        # If still empty — relax constraint and take cheapest valid player
+        if lineup[i] is None:
+            cheapest = sorted([p for p in pool_sorted
+                              if p["name"] not in used_names
+                              and p["pos"] in slot["positions"]], key=lambda x: x["salary"])
+            for p in cheapest:
+                if total_salary + p["salary"] <= NBA_SALARY_CAP:
+                    lineup[i] = p; used_names.add(p["name"]); total_salary += p["salary"]; break
 
     return lineup, total_salary
 
@@ -729,6 +739,10 @@ def render_nba_lineup(lineup, total_salary, mode="gpp"):
         floor = p.get("sim_floor", 0)
         veg_total = p.get("vegas_total", "")
         total_str = f"O/U {veg_total}" if veg_total else ""
+        val = round(p["proj"] / (p["salary"] / 1000), 2) if p["salary"] > 0 else 0
+        val_color = "#52b788" if val >= 5.0 else ("#f5a623" if val >= 4.0 else "#8892a4")
+        is_locked = p["name"] in st.session_state.nba_locked
+        gpp_reason = f"🔒 Locked" if is_locked else f"GPP rank: Ceil {ceil:.0f} × (1-{own:.0f}%) = {ceil*(1-own/100):.0f}"
         st.markdown(f"""
         <div class='lineup-slot'>
           <span class='slot-label'>{slot}</span>
@@ -736,9 +750,9 @@ def render_nba_lineup(lineup, total_salary, mode="gpp"):
             <span style='font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:1rem;color:#ffffff'>{p['name']}</span>
             <span style='color:#8892a4;font-size:0.78rem;margin-left:6px'>{p['pos']} · {p['team']} vs {p['opp']} {total_str}</span>
             <div style='font-size:0.7rem;color:#6b7280;margin-top:2px'>
-              Val: <span style='color:{"#52b788" if p["proj"]/(p["salary"]/1000)>=5 else "#f5a623"}'>{p["proj"]/(p["salary"]/1000):.2f}</span>
+              Val: <span style='color:{val_color}'>{val:.2f}</span>
               · Own: <span style='color:{own_color}'>{own:.0f}%</span>
-              · {"🔒 Locked" if p["name"] in st.session_state.nba_locked else f'GPP rank: Ceil {ceil:.0f} × (1-{own:.0f}%) = {ceil*(1-own/100):.0f}'}
+              · {gpp_reason}
             </div>
           </div>
           <span style='color:#8892a4;font-size:0.8rem;margin-right:12px'>${p['salary']:,}</span>
