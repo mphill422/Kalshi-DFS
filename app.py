@@ -735,6 +735,11 @@ def render_nba_lineup(lineup, total_salary, mode="gpp"):
           <div style='flex:1;margin-left:8px'>
             <span style='font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:1rem;color:#ffffff'>{p['name']}</span>
             <span style='color:#8892a4;font-size:0.78rem;margin-left:6px'>{p['pos']} · {p['team']} vs {p['opp']} {total_str}</span>
+            <div style='font-size:0.7rem;color:#6b7280;margin-top:2px'>
+              Val: <span style='color:{"#52b788" if p["proj"]/(p["salary"]/1000)>=5 else "#f5a623"}'>{p["proj"]/(p["salary"]/1000):.2f}</span>
+              · Own: <span style='color:{own_color}'>{own:.0f}%</span>
+              · {"🔒 Locked" if p["name"] in st.session_state.nba_locked else f'GPP rank: Ceil {ceil:.0f} × (1-{own:.0f}%) = {ceil*(1-own/100):.0f}'}
+            </div>
           </div>
           <span style='color:#8892a4;font-size:0.8rem;margin-right:12px'>${p['salary']:,}</span>
           <span style='color:#52b788;font-weight:700;font-size:0.9rem;margin-right:8px'>{p['proj']:.1f}</span>
@@ -1246,11 +1251,18 @@ if sport_mode == "🏀 NBA Classic":
             injuries    = fetch_injuries("nba")
             ownership   = fetch_real_ownership("nba")
 
-            # Apply injuries, Vegas, ownership to players
+            # Apply injuries — check both CSV INJ column AND Rotowire live feed
             for p in nba_players:
-                inj = get_inj(p["name"], injuries)
-                if p["name"] not in st.session_state.nba_locked:
-                    p["inj_status"] = inj.get("status",""); p["inj_note"] = inj.get("note","")
+                # CSV injury status is already parsed from INJ column
+                csv_inj = p.get("inj_status","").upper()
+                # Live feed
+                live_inj = get_inj(p["name"], injuries)
+                live_status = live_inj.get("status","").upper()
+                # Use whichever is more severe
+                if "OUT" in csv_inj or "OUT" in live_status:
+                    p["inj_status"] = "OUT"
+                elif "GTD" in csv_inj or "GTD" in live_status or "QUESTIONABLE" in live_status:
+                    p["inj_status"] = "GTD"
                 # Vegas
                 veg = get_vegas(p["team"], vegas_lines)
                 p["vegas_total"] = veg.get("total"); p["vegas_spread"] = veg.get("spread")
@@ -1357,50 +1369,87 @@ if sport_mode == "🏀 NBA Classic":
             st.info("Upload CSV first.")
         else:
             search = st.text_input("Search player or team...", "")
-            pos_filter = st.multiselect("Filter position", ["PG","SG","SF","PF","C"], default=[])
+            col_pf, col_inj = st.columns(2)
+            with col_pf:
+                pos_filter = st.multiselect("Filter position", ["PG","SG","SF","PF","C"], default=[])
+            with col_inj:
+                hide_out = st.toggle("Hide OUT players", value=True)
+
             filtered = [p for p in st.session_state.nba_players
                        if (search.lower() in p["name"].lower() or search.lower() in p["team"].lower())
-                       and (not pos_filter or p["pos"] in pos_filter)]
+                       and (not pos_filter or p["pos"] in pos_filter)
+                       and (not hide_out or "OUT" not in p.get("inj_status","").upper())]
             filtered.sort(key=lambda x: x["proj"], reverse=True)
 
-            rows = []
-            for p in filtered[:100]:
-                rows.append({
-                    "Player": p["name"],
-                    "Pos": p["pos"],
-                    "Team": p["team"],
-                    "vs": p["opp"],
-                    "Salary": f"${p['salary']:,}",
-                    "Proj": p["proj"],
-                    "Floor": p.get("sim_floor",0),
-                    "Median": p.get("sim_median",0),
-                    "Ceiling": p.get("sim_ceiling",0),
-                    "Own%": p.get("ownership_pct",0),
-                    "O/U": p.get("vegas_total",""),
-                    "Status": p.get("inj_status",""),
-                    "Lock": "🔒" if p["name"] in st.session_state.nba_locked else "",
-                    "Out": "🚫" if p["name"] in st.session_state.nba_excluded else "",
-                })
-            df_display = pd.DataFrame(rows)
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            # Render each player as a card row with inline lock/exclude
+            for p in filtered[:60]:
+                own = p.get("ownership_pct", 0) or 0
+                own_color = "#f87171" if own >= 35 else ("#f5a623" if own >= 20 else "#52b788")
+                status = p.get("inj_status","")
+                status_html = f"<span style='color:#f87171;font-size:0.72rem;font-weight:700'> {status}</span>" if status else ""
+                is_locked = p["name"] in st.session_state.nba_locked
+                is_excluded = p["name"] in st.session_state.nba_excluded
+                value = round(p["proj"] / (p["salary"] / 1000), 2) if p["salary"] > 0 else 0
+                value_color = "#52b788" if value >= 5.0 else ("#f5a623" if value >= 4.0 else "#8892a4")
+                ceil = p.get("sim_ceiling", 0)
+                floor = p.get("sim_floor", 0)
+                total_str = f"O/U {p['vegas_total']}" if p.get("vegas_total") else ""
+                border_color = "#52b788" if is_locked else ("#f87171" if is_excluded else "#1e2d45")
+                bg_color = "#0a1f0a" if is_locked else ("#2a0a0a" if is_excluded else "#0d1424")
 
-            st.markdown("---")
-            col_lock, col_excl = st.columns(2)
-            with col_lock:
-                st.markdown("**Lock a player:**")
-                all_names = [p["name"] for p in st.session_state.nba_players]
-                lock_name = st.selectbox("Select to lock", [""] + all_names, key="lock_select")
-                if lock_name and st.button("🔒 Lock"):
-                    st.session_state.nba_locked.add(lock_name)
-                    st.session_state.nba_excluded.discard(lock_name)
-                    st.rerun()
-            with col_excl:
-                st.markdown("**Exclude a player:**")
-                excl_name = st.selectbox("Select to exclude", [""] + all_names, key="excl_select")
-                if excl_name and st.button("🚫 Exclude"):
-                    st.session_state.nba_excluded.add(excl_name)
-                    st.session_state.nba_locked.discard(excl_name)
-                    st.rerun()
+                col1, col2, col3 = st.columns([5, 1, 1])
+                with col1:
+                    st.markdown(f"""
+                    <div style='background:{bg_color};border:1px solid {border_color};border-radius:8px;padding:0.5rem 0.8rem;margin-bottom:0.3rem'>
+                    <div style='display:flex;justify-content:space-between;align-items:center'>
+                      <div>
+                        <span style='font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:1rem;color:#fff'>{p['name']}</span>
+                        <span style='color:#8892a4;font-size:0.75rem;margin-left:6px'>{p['pos']} · {p['team']} vs {p['opp']} · ${p['salary']:,} · {total_str}</span>
+                        {status_html}
+                        {'<span style="color:#52b788;font-size:0.7rem;margin-left:6px">🔒 LOCKED</span>' if is_locked else ''}
+                        {'<span style="color:#f87171;font-size:0.7rem;margin-left:6px">🚫 EXCLUDED</span>' if is_excluded else ''}
+                      </div>
+                      <div style='display:flex;gap:16px;align-items:center'>
+                        <div style='text-align:center'>
+                          <div style='font-size:0.6rem;color:#8892a4'>PROJ</div>
+                          <div style='font-weight:700;color:#52b788'>{p['proj']:.1f}</div>
+                        </div>
+                        <div style='text-align:center'>
+                          <div style='font-size:0.6rem;color:#8892a4'>CEIL</div>
+                          <div style='font-weight:700;color:#00d4ff'>{ceil:.0f}</div>
+                        </div>
+                        <div style='text-align:center'>
+                          <div style='font-size:0.6rem;color:#8892a4'>FLOR</div>
+                          <div style='font-weight:700;color:#8892a4'>{floor:.0f}</div>
+                        </div>
+                        <div style='text-align:center'>
+                          <div style='font-size:0.6rem;color:#8892a4'>VAL</div>
+                          <div style='font-weight:700;color:{value_color}'>{value:.2f}</div>
+                        </div>
+                        <div style='text-align:center'>
+                          <div style='font-size:0.6rem;color:#8892a4'>OWN%</div>
+                          <div style='font-weight:700;color:{own_color}'>{own:.0f}%</div>
+                        </div>
+                      </div>
+                    </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col2:
+                    lock_label = "🔓 Unlock" if is_locked else "🔒 Lock"
+                    if st.button(lock_label, key=f"lock_{p['name']}"):
+                        if is_locked: st.session_state.nba_locked.discard(p["name"])
+                        else:
+                            st.session_state.nba_locked.add(p["name"])
+                            st.session_state.nba_excluded.discard(p["name"])
+                        st.rerun()
+                with col3:
+                    excl_label = "↩ Include" if is_excluded else "🚫 Exclude"
+                    if st.button(excl_label, key=f"excl_{p['name']}"):
+                        if is_excluded: st.session_state.nba_excluded.discard(p["name"])
+                        else:
+                            st.session_state.nba_excluded.add(p["name"])
+                            st.session_state.nba_locked.discard(p["name"])
+                        st.rerun()
 
     with tab3:
         st.markdown("### 🏆 My Lineups")
