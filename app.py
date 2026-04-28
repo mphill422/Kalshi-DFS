@@ -1411,6 +1411,9 @@ if sport_mode == "🏀 NBA Classic":
                 border_color = "#52b788" if is_locked else ("#f87171" if is_excluded else "#1e2d45")
                 bg_color = "#0a1f0a" if is_locked else ("#2a0a0a" if is_excluded else "#0d1424")
 
+                lock_badge = '<span style="color:#52b788;font-size:0.7rem;margin-left:6px">🔒 LOCKED</span>' if is_locked else ''
+                excl_badge = '<span style="color:#f87171;font-size:0.7rem;margin-left:6px">🚫 EXCLUDED</span>' if is_excluded else ''
+
                 col1, col2, col3 = st.columns([5, 1, 1])
                 with col1:
                     st.markdown(f"""
@@ -1419,9 +1422,7 @@ if sport_mode == "🏀 NBA Classic":
                       <div>
                         <span style='font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:1rem;color:#fff'>{p['name']}</span>
                         <span style='color:#8892a4;font-size:0.75rem;margin-left:6px'>{p['pos']} · {p['team']} vs {p['opp']} · ${p['salary']:,} · {total_str}</span>
-                        {status_html}
-                        {'<span style="color:#52b788;font-size:0.7rem;margin-left:6px">🔒 LOCKED</span>' if is_locked else ''}
-                        {'<span style="color:#f87171;font-size:0.7rem;margin-left:6px">🚫 EXCLUDED</span>' if is_excluded else ''}
+                        {status_html}{lock_badge}{excl_badge}
                       </div>
                       <div style='display:flex;gap:16px;align-items:center'>
                         <div style='text-align:center'>
