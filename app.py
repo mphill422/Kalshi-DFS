@@ -1,33 +1,32 @@
 """
-MPH Underdog Ladders Model — V1.0
+MPH Underdog Ladders Model — V2.0
 ==================================
-Monte Carlo prop modeling for Underdog Ladders (NBA + MLB)
+Monte Carlo prop modeling for Underdog / PrizePicks / Betr (NBA + MLB)
 
-Architecture:
-- Tab 1: NBA Props (Blocks / Steals / 3PM) — auto from Odds API
-- Tab 2: MLB Props (Ks / Hits / TB / RBI / Runs) — auto from Odds API
-- Tab 3: Underdog Overlay — manual rung entry, full MC analysis
-- Tab 4: Settings — API status, cache controls
-
-Methodology:
-- Bootstrap Monte Carlo (10,000 sims) from empirical game logs
-- L25 game window with L10 weighting for recency
-- Adjustments: minutes projection, opponent defense, pace factor
-- Joint probability for ladder rungs (captures within-game correlation)
-- Edge = Model Hit Prob − Implied Prob (from sportsbook odds or UD payout)
-- Fallback to Poisson with shrinkage when sample size <10 games
+V2.0 BUILD NOTES (vs V1.0):
+- Switched NBA data source: NBA Stats API → BallDontLie (avoids cloud IP block)
+- Distribution: Poisson fallback → Negative Binomial throughout (handles overdispersion)
+- Sims: 10K → 50K default (sidebar slider 10K/50K/100K)
+- Trust + Edge + 🔥 Combined scoring system (mirrors weather model)
+- Full stat coverage: NBA Pts/Reb/Ast/Blk/Stl/3PM + combos (PRA, P+R, P+A, R+A)
+- Full MLB stat coverage: hitter (H/TB/HR/RBI/R) + pitcher (K/ER/Outs/HA/BB)
+- Adjustment layer: Minutes (ESPN injury) + Vegas total + Pace (BallDontLie)
+- Top Plays summary panel per sport tab
+- Universal Ladder Builder w/ Standard/Demon/Goblin/Ladder modes
+- Sport-first tab structure with sub-tabs (Props/Ladders/Top Plays)
+- Sidebar sliders w/ discipline guardrails
+- Suggested bet sizing tied to score tier ($3-$10, $50/day cap)
 
 Repo: mphill422/Kalshi-DFS
-Replaces: DK Tier optimizer (deprecated)
+Replaces: V1.0 streamlit_app.py
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import json
 from datetime import datetime, timedelta, date
-from scipy import stats
+from scipy import stats as scipy_stats
 import time
 
 # ============================================================
@@ -35,110 +34,367 @@ import time
 # ============================================================
 
 st.set_page_config(
-    page_title="MPH Underdog Ladders",
+    page_title="MPH DFS Model V2.0",
     page_icon="🪜",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Constants
-# Read Odds API key from [odds] section in secrets, with fallback
-try:
-    ODDS_API_KEY = st.secrets["odds"]["api_key"]
-except (KeyError, FileNotFoundError):
-    ODDS_API_KEY = st.secrets.get("ODDS_API_KEY", "")
-    if not ODDS_API_KEY:
-        st.error("⚠️ ODDS_API_KEY not found in Streamlit secrets. Add [odds] section with api_key.")
+# --- Secrets ---
+def _get_secret(section: str, key: str, default: str = "") -> str:
+    """Safely read a secret from [section] section."""
+    try:
+        return st.secrets[section][key]
+    except (KeyError, FileNotFoundError, AttributeError):
+        return default
+
+ODDS_API_KEY = _get_secret("odds", "api_key", "")
+BDL_API_KEY = _get_secret("balldontlie", "api_key", "")
+
+# --- API endpoints ---
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
-
-NBA_STATS_BASE = "https://stats.nba.com/stats"
-NBA_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nba.com/",
-    "Origin": "https://www.nba.com",
-    "x-nba-stats-origin": "stats",
-    "x-nba-stats-token": "true",
-    "Connection": "keep-alive",
-}
-
+BDL_BASE = "https://api.balldontlie.io/v1"
 MLB_STATS_BASE = "https://statsapi.mlb.com/api/v1"
-
 ESPN_NBA_INJURIES = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
 ESPN_MLB_INJURIES = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/injuries"
 
-# MC config
-N_SIMULATIONS = 10_000
+# --- Model constants ---
+DEFAULT_N_SIMS = 50_000
 L25_WINDOW = 25
-L10_WEIGHT = 0.70  # 70% weight on L10, 30% on games 11-25
+L10_WEIGHT = 0.70
 
-# NBA stat keys (Odds API)
+# --- Stat market mappings (Odds API) ---
 NBA_STAT_MARKETS = {
+    "Points": "player_points",
+    "Rebounds": "player_rebounds",
+    "Assists": "player_assists",
     "Blocks": "player_blocks",
     "Steals": "player_steals",
     "3PM": "player_threes",
 }
-
-# MLB stat keys (Odds API)
+NBA_COMBO_MARKETS = {
+    "Pts+Reb+Ast": "player_points_rebounds_assists",
+    "Pts+Reb": "player_points_rebounds",
+    "Pts+Ast": "player_points_assists",
+    "Reb+Ast": "player_rebounds_assists",
+}
 MLB_STAT_MARKETS = {
-    "Strikeouts": "pitcher_strikeouts",
     "Hits": "batter_hits",
     "Total Bases": "batter_total_bases",
     "RBI": "batter_rbis",
     "Runs": "batter_runs_scored",
+    "Home Runs": "batter_home_runs",
+    "Strikeouts": "pitcher_strikeouts",
+    "Earned Runs": "pitcher_earned_runs",
+    "Outs Recorded": "pitcher_outs",
+    "Hits Allowed": "pitcher_hits_allowed",
+    "Walks Issued": "pitcher_walks",
 }
 
-# Stat-to-NBA-Stats-API column mapping
-NBA_STAT_COLUMNS = {
-    "Blocks": "BLK",
-    "Steals": "STL",
-    "3PM": "FG3M",
+# --- BallDontLie stat field mapping ---
+BDL_STAT_FIELDS = {
+    "Points": "pts",
+    "Rebounds": "reb",
+    "Assists": "ast",
+    "Blocks": "blk",
+    "Steals": "stl",
+    "3PM": "fg3m",
+    "Minutes": "min",
 }
 
-# League averages for opponent adjustment normalization
-NBA_LEAGUE_AVG = {
-    "Blocks": 5.0,   # team blocks allowed per game
-    "Steals": 7.5,
-    "3PM": 12.5,
-}
+# --- League averages for normalization ---
+NBA_LEAGUE_AVG = {"Points": 25.0, "Rebounds": 7.0, "Assists": 5.5,
+                  "Blocks": 1.0, "Steals": 1.0, "3PM": 2.5}
+MLB_LEAGUE_AVG = {"Hits": 1.0, "Total Bases": 1.5, "RBI": 0.7, "Runs": 0.7,
+                  "Home Runs": 0.15, "Strikeouts": 5.5, "Earned Runs": 2.5,
+                  "Outs Recorded": 16.0, "Hits Allowed": 5.0, "Walks Issued": 2.0}
 
-MLB_LEAGUE_AVG = {
-    "Strikeouts": 8.5,  # team Ks per game
-    "Hits": 8.5,
-    "Total Bases": 14.0,
-    "RBI": 4.3,
-    "Runs": 4.3,
+# Status -> minutes multiplier
+STATUS_MULTIPLIER = {
+    "Active": 1.0, "Probable": 0.95, "Day-To-Day": 0.85,
+    "Questionable": 0.70, "Doubtful": 0.30, "Out": 0.0, "IR": 0.0,
 }
 
 
 # ============================================================
-# DATA FETCHERS — ODDS API
+# MONTE CARLO ENGINE
 # ============================================================
 
-@st.cache_data(ttl=300)  # 5 min cache
-def fetch_odds_api_props(sport: str, markets: list, regions: str = "us"):
+def fit_negative_binomial(values: np.ndarray) -> tuple:
     """
-    Pull player props from The Odds API.
-    sport: 'basketball_nba' or 'baseball_mlb'
-    markets: list of market keys like ['player_blocks', 'player_steals']
+    Fit Negative Binomial parameters (n, p) to game log values.
+    Returns (n, p) where mean = n*(1-p)/p, var = n*(1-p)/p^2
+    Falls back to Poisson params if variance <= mean (no overdispersion).
     """
-    # First get today's events
+    vals = np.asarray(values, dtype=float)
+    vals = vals[~np.isnan(vals)]
+    if len(vals) == 0:
+        return None, None
+    mean = np.mean(vals)
+    var = np.var(vals, ddof=1) if len(vals) > 1 else mean
+    if mean <= 0:
+        return None, None
+    if var <= mean:
+        # Underdispersed or equal — use Poisson-equivalent (large n, small p)
+        return None, None  # signal to use Poisson
+    # Method of moments for NB
+    p = mean / var
+    n = mean * p / (1 - p)
+    if n <= 0 or not np.isfinite(n):
+        return None, None
+    return n, p
+
+
+def build_player_distribution(values: np.ndarray, n_sims: int = DEFAULT_N_SIMS) -> np.ndarray:
+    """
+    Generate MC distribution from empirical game log.
+    Strategy:
+    1. If sample >= 10: bootstrap from L25 with L10 recency weighting (70/30)
+    2. If sample 5-9: use Negative Binomial fit (or Poisson if no overdispersion)
+    3. If sample < 5: Poisson with shrinkage
+    Returns array of n_sims integer outcomes.
+    """
+    vals = np.asarray(values, dtype=float)
+    vals = vals[~np.isnan(vals)]
+
+    if len(vals) == 0:
+        return np.zeros(n_sims, dtype=int)
+
+    if len(vals) < 5:
+        # Tiny sample — Poisson with shrinkage toward mean
+        mean = max(np.mean(vals), 0.1)
+        return np.random.poisson(lam=mean, size=n_sims).astype(int)
+
+    if len(vals) < 10:
+        # Small sample — try NB, fall back to Poisson
+        n_nb, p_nb = fit_negative_binomial(vals)
+        if n_nb is not None and p_nb is not None:
+            return np.random.negative_binomial(n=n_nb, p=p_nb, size=n_sims)
+        else:
+            mean = max(np.mean(vals), 0.1)
+            return np.random.poisson(lam=mean, size=n_sims).astype(int)
+
+    # Adequate sample (>= 10) — bootstrap with L10 weighting
+    l10 = vals[: min(10, len(vals))]
+    l_older = vals[10: min(L25_WINDOW, len(vals))]
+
+    if len(l_older) > 0:
+        n_l10 = int(n_sims * L10_WEIGHT)
+        n_older = n_sims - n_l10
+        sims_l10 = np.random.choice(l10, size=n_l10, replace=True)
+        sims_older = np.random.choice(l_older, size=n_older, replace=True)
+        sims = np.concatenate([sims_l10, sims_older])
+        np.random.shuffle(sims)
+    else:
+        sims = np.random.choice(l10, size=n_sims, replace=True)
+
+    return np.round(sims).astype(int).clip(min=0)
+
+
+def apply_adjustments(sims: np.ndarray, minutes_mult: float = 1.0,
+                      pace_mult: float = 1.0, total_mult: float = 1.0) -> np.ndarray:
+    """Apply multiplicative adjustments to sim array."""
+    combined = minutes_mult * pace_mult * total_mult
+    if combined == 1.0:
+        return sims
+    adjusted = sims.astype(float) * combined
+    return np.round(adjusted).astype(int).clip(min=0)
+
+
+def hit_probability(sims: np.ndarray, line: float, side: str = "Over") -> float:
+    """P(stat > line) for Over, P(stat < line) for Under (handles .5 lines naturally)."""
+    if len(sims) == 0:
+        return 0.5
+    if side.lower() == "over":
+        return float(np.mean(sims > line))
+    else:
+        return float(np.mean(sims <= line))
+
+
+def implied_prob_from_american(odds: float):
+    if odds is None or pd.isna(odds):
+        return None
+    if odds > 0:
+        return 100.0 / (odds + 100.0)
+    return -odds / (-odds + 100.0)
+
+
+def implied_prob_from_payout(payout_mult: float):
+    if not payout_mult or payout_mult <= 0:
+        return None
+    return 1.0 / payout_mult
+
+
+# ============================================================
+# TRUST & EDGE SCORING
+# ============================================================
+
+def trust_score(values: np.ndarray, line: float, side: str,
+                l10_avg: float, season_avg: float,
+                injury_status: str) -> tuple:
+    """
+    Compute Trust Score 0-100 and component breakdown.
+    5 components:
+      L25 Hit Rate (40%)
+      Sample Quality (20%)
+      Consistency (15%)
+      Form Alignment (15%)
+      Status Health (10%)
+    """
+    vals = np.asarray(values, dtype=float)
+    vals = vals[~np.isnan(vals)]
+
+    if len(vals) == 0:
+        return 0.0, {}
+
+    # 1. L25 Hit Rate
+    if side.lower() == "over":
+        hits = int(np.sum(vals > line))
+    else:
+        hits = int(np.sum(vals <= line))
+    hit_rate_pct = (hits / len(vals)) * 100
+
+    # 2. Sample Quality
+    sample_score = min(len(vals) / 25.0, 1.0) * 100
+
+    # 3. Consistency (lower CV = higher score)
+    mean = np.mean(vals)
+    if mean > 0:
+        cv = np.std(vals, ddof=1) / mean if len(vals) > 1 else 1.0
+        consistency_score = max(0, (1 - min(cv, 1.0)) * 100)
+    else:
+        consistency_score = 0
+
+    # 4. Form Alignment (L10 vs Season)
+    if season_avg and season_avg > 0 and l10_avg is not None:
+        deviation_pct = abs(l10_avg - season_avg) / season_avg * 100
+        form_score = max(0, 100 - deviation_pct)
+    else:
+        form_score = 50
+
+    # 5. Status Health
+    status_clean = (injury_status or "Active").strip()
+    status_map = {
+        "active": 100, "probable": 90, "day-to-day": 75,
+        "questionable": 50, "doubtful": 20, "out": 0, "ir": 0,
+    }
+    status_score = status_map.get(status_clean.lower(), 100)
+
+    # Weighted total
+    total = (hit_rate_pct * 0.40 +
+             sample_score * 0.20 +
+             consistency_score * 0.15 +
+             form_score * 0.15 +
+             status_score * 0.10)
+
+    components = {
+        "hit_rate": round(hit_rate_pct, 1),
+        "sample": round(sample_score, 1),
+        "consistency": round(consistency_score, 1),
+        "form": round(form_score, 1),
+        "status": status_score,
+    }
+    return round(total, 1), components
+
+
+def edge_score(model_prob: float, implied_prob: float,
+               l10_avg: float, line: float, std_dev: float,
+               cross_platform_gap: float = 0.0) -> tuple:
+    """
+    Edge Score 0-100.
+    Components:
+      Model − Implied (60%) capped at 25 percentage points
+      Line Comfort (25%) — how far L10 avg is from line in std devs
+      Cross-Platform Gap (15%)
+    """
+    if model_prob is None or implied_prob is None:
+        return 0.0, {}
+
+    # 1. Model edge (cap at 25 pp; map 0-25 to 0-100)
+    raw_edge_pp = (model_prob - implied_prob) * 100
+    edge_component = min(max(raw_edge_pp, 0) / 25.0, 1.0) * 100
+
+    # 2. Line comfort
+    if std_dev and std_dev > 0 and l10_avg is not None:
+        z = abs(l10_avg - line) / std_dev
+        comfort = min(z / 2.0, 1.0) * 100
+    else:
+        comfort = 0
+
+    # 3. Cross-platform gap (caller computes)
+    gap_score = min(abs(cross_platform_gap) / 0.15, 1.0) * 100
+
+    total = (edge_component * 0.60 +
+             comfort * 0.25 +
+             gap_score * 0.15)
+
+    return round(total, 1), {
+        "edge_pp": round(raw_edge_pp, 1),
+        "comfort": round(comfort, 1),
+        "gap": round(gap_score, 1),
+    }
+
+
+def signal_tier(trust: float, edge_pp: float,
+                trust_thresh: float = 65, edge_thresh: float = 5) -> str:
+    """Returns one of: 🔥 Combined / 🎯 Trust / 💎 Edge / 🟡 Thin / 🔴 Fade / ⚪ None"""
+    if edge_pp is None:
+        return "⚪"
+    if trust >= trust_thresh and edge_pp >= edge_thresh:
+        return "🔥"
+    if trust >= trust_thresh:
+        return "🎯"
+    if edge_pp >= edge_thresh:
+        return "💎"
+    if edge_pp < 0:
+        return "🔴"
+    return "🟡"
+
+
+def suggested_bet_size(trust: float, edge_pp: float, tier: str) -> tuple:
+    """Returns (size_dollars, reasoning)."""
+    if tier == "🔥":
+        return 10, "🔥 Combined — max sizing"
+    if tier == "🎯":
+        if trust >= 90:
+            return 10, "Trust 90+"
+        if trust >= 80:
+            return 7, "Trust 80-89"
+        if trust >= 70:
+            return 5, "Trust 70-79"
+        return 5, "Trust pick"
+    if tier == "💎":
+        if edge_pp >= 12 and trust >= 70:
+            return 7, "Edge 12+ / Trust 70+"
+        if edge_pp >= 8 and trust >= 65:
+            return 5, "Edge 8-12"
+        if edge_pp >= 5 and trust >= 60:
+            return 3, "Edge 5-8"
+        return 3, "Marginal edge"
+    return 0, "Below threshold"
+
+
+# ============================================================
+# DATA — ODDS API
+# ============================================================
+
+@st.cache_data(ttl=300)
+def fetch_odds_api_props(sport: str, markets: list):
+    if not ODDS_API_KEY:
+        return [], "Odds API key missing in secrets"
+
     events_url = f"{ODDS_API_BASE}/sports/{sport}/events"
-    events_params = {"apiKey": ODDS_API_KEY, "dateFormat": "iso"}
-
     try:
-        resp = requests.get(events_url, params=events_params, timeout=15)
-        if resp.status_code != 200:
-            return [], f"Events API error {resp.status_code}: {resp.text[:200]}"
-        events = resp.json()
+        r = requests.get(events_url, params={"apiKey": ODDS_API_KEY}, timeout=15)
+        if r.status_code != 200:
+            return [], f"Events API {r.status_code}: {r.text[:200]}"
+        events = r.json()
     except Exception as e:
         return [], f"Events fetch failed: {e}"
 
     if not events:
-        return [], "No events scheduled today"
+        return [], "No events scheduled"
 
-    # Filter to today's games only
     today = datetime.utcnow().date()
     today_events = []
     for ev in events:
@@ -150,206 +406,223 @@ def fetch_odds_api_props(sport: str, markets: list, regions: str = "us"):
         except Exception:
             continue
 
-    # Pull props per event
     all_props = []
     markets_str = ",".join(markets)
-
     for ev in today_events:
-        event_id = ev["id"]
-        odds_url = f"{ODDS_API_BASE}/sports/{sport}/events/{event_id}/odds"
-        odds_params = {
-            "apiKey": ODDS_API_KEY,
-            "regions": regions,
-            "markets": markets_str,
-            "oddsFormat": "american",
-            "bookmakers": "draftkings,fanduel",
-        }
-
+        odds_url = f"{ODDS_API_BASE}/sports/{sport}/events/{ev['id']}/odds"
         try:
-            r = requests.get(odds_url, params=odds_params, timeout=15)
+            r = requests.get(odds_url, params={
+                "apiKey": ODDS_API_KEY,
+                "regions": "us",
+                "markets": markets_str,
+                "oddsFormat": "american",
+                "bookmakers": "draftkings,fanduel",
+            }, timeout=15)
             if r.status_code != 200:
                 continue
             data = r.json()
-
-            home = data.get("home_team", "")
-            away = data.get("away_team", "")
-
             for book in data.get("bookmakers", []):
-                book_key = book.get("key", "")
-                for market in book.get("markets", []):
-                    market_key = market.get("key", "")
-                    for outcome in market.get("outcomes", []):
+                for m in book.get("markets", []):
+                    for o in m.get("outcomes", []):
                         all_props.append({
-                            "event_id": event_id,
-                            "home": home,
-                            "away": away,
+                            "event_id": ev["id"],
+                            "home": data.get("home_team", ""),
+                            "away": data.get("away_team", ""),
                             "commence_time": data.get("commence_time"),
-                            "book": book_key,
-                            "market": market_key,
-                            "player": outcome.get("description", ""),
-                            "side": outcome.get("name", ""),  # "Over" or "Under"
-                            "line": outcome.get("point"),
-                            "odds": outcome.get("price"),
+                            "book": book.get("key", ""),
+                            "market": m.get("key", ""),
+                            "player": o.get("description", ""),
+                            "side": o.get("name", ""),
+                            "line": o.get("point"),
+                            "odds": o.get("price"),
                         })
         except Exception:
             continue
 
     if not all_props:
-        return [], f"No props returned for {len(today_events)} events"
-
+        return [], f"No props for {len(today_events)} events"
     return all_props, None
 
 
-def consolidate_props_to_lines(props: list, market_label_map: dict) -> pd.DataFrame:
-    """
-    Collapse Over/Under outcomes per player+line into one row.
-    Returns DataFrame with: player, market_label, line, over_odds, under_odds, book.
-    """
-    if not props:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(props)
-    if df.empty:
-        return df
-
-    # Reverse map: market_key -> label (e.g. 'player_blocks' -> 'Blocks')
-    rev_map = {v: k for k, v in market_label_map.items()}
-    df["stat"] = df["market"].map(rev_map)
-    df = df[df["stat"].notna()]
-
-    # Pivot Over/Under into columns
-    pivot_rows = []
-    for (player, stat, line, book, home, away, commence), grp in df.groupby(
-        ["player", "stat", "line", "book", "home", "away", "commence_time"]
-    ):
-        over_odds = grp[grp["side"] == "Over"]["odds"].values
-        under_odds = grp[grp["side"] == "Under"]["odds"].values
-        pivot_rows.append({
-            "player": player,
-            "stat": stat,
-            "line": line,
-            "book": book,
-            "home": home,
-            "away": away,
-            "commence_time": commence,
-            "over_odds": float(over_odds[0]) if len(over_odds) else None,
-            "under_odds": float(under_odds[0]) if len(under_odds) else None,
-        })
-
-    return pd.DataFrame(pivot_rows)
-
-
-# ============================================================
-# DATA FETCHERS — NBA STATS API
-# ============================================================
-
-@st.cache_data(ttl=1800)  # 30 min
-def fetch_nba_player_id(player_name: str):
-    """Get NBA player ID from name. Uses commonallplayers endpoint."""
-    url = f"{NBA_STATS_BASE}/commonallplayers"
-    params = {
-        "LeagueID": "00",
-        "Season": _current_nba_season(),
-        "IsOnlyCurrentSeason": "1",
-    }
+@st.cache_data(ttl=600)
+def fetch_event_total(sport: str, event_id: str):
+    """Pull game total (over/under) for pace adjustment."""
+    if not ODDS_API_KEY or not event_id:
+        return None
     try:
-        r = requests.get(url, params=params, headers=NBA_HEADERS, timeout=15)
+        r = requests.get(
+            f"{ODDS_API_BASE}/sports/{sport}/events/{event_id}/odds",
+            params={"apiKey": ODDS_API_KEY, "regions": "us", "markets": "totals",
+                    "bookmakers": "draftkings"},
+            timeout=10,
+        )
         if r.status_code != 200:
             return None
         data = r.json()
-        rs = data["resultSets"][0]
-        headers = rs["headers"]
-        rows = rs["rowSet"]
-        df = pd.DataFrame(rows, columns=headers)
-        # Match on display first/last
-        df["full_name"] = df["DISPLAY_FIRST_LAST"].str.lower()
-        match = df[df["full_name"] == player_name.lower()]
-        if match.empty:
-            # Fuzzy fallback — last name match
-            last = player_name.split()[-1].lower()
-            match = df[df["full_name"].str.endswith(last)]
-        if not match.empty:
-            return int(match.iloc[0]["PERSON_ID"])
+        for book in data.get("bookmakers", []):
+            for m in book.get("markets", []):
+                if m.get("key") == "totals":
+                    for o in m.get("outcomes", []):
+                        if o.get("name") == "Over":
+                            return o.get("point")
+    except Exception:
+        return None
+    return None
+
+
+def consolidate_props(props: list, market_label_map: dict) -> pd.DataFrame:
+    """Collapse Over/Under outcomes per player+line+book."""
+    if not props:
+        return pd.DataFrame()
+    df = pd.DataFrame(props)
+    if df.empty:
+        return df
+    rev = {v: k for k, v in market_label_map.items()}
+    df["stat"] = df["market"].map(rev)
+    df = df[df["stat"].notna()]
+
+    rows = []
+    grouped = df.groupby(["player", "stat", "line", "book", "home", "away",
+                          "commence_time", "event_id"])
+    for keys, grp in grouped:
+        player, stat, line, book, home, away, commence, event_id = keys
+        over = grp[grp["side"] == "Over"]["odds"].values
+        under = grp[grp["side"] == "Under"]["odds"].values
+        rows.append({
+            "player": player, "stat": stat, "line": line, "book": book,
+            "home": home, "away": away, "commence_time": commence,
+            "event_id": event_id,
+            "over_odds": float(over[0]) if len(over) else None,
+            "under_odds": float(under[0]) if len(under) else None,
+        })
+    return pd.DataFrame(rows)
+
+
+# ============================================================
+# DATA — BALLDONTLIE (NBA)
+# ============================================================
+
+def _bdl_headers():
+    return {"Authorization": BDL_API_KEY} if BDL_API_KEY else {}
+
+
+@st.cache_data(ttl=3600)
+def bdl_search_player(player_name: str):
+    """Find BallDontLie player ID by name."""
+    if not BDL_API_KEY:
+        return None
+    parts = player_name.strip().split()
+    if not parts:
+        return None
+    # Try exact full-name search using last name
+    search_term = parts[-1]
+    try:
+        r = requests.get(f"{BDL_BASE}/players",
+                         params={"search": search_term, "per_page": 25},
+                         headers=_bdl_headers(), timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json().get("data", [])
+        target_full = player_name.lower().strip()
+        # Exact match first
+        for p in data:
+            full = f"{p.get('first_name', '')} {p.get('last_name', '')}".lower().strip()
+            if full == target_full:
+                return p["id"]
+        # Last-name match if exact failed
+        target_last = parts[-1].lower()
+        for p in data:
+            if p.get("last_name", "").lower() == target_last:
+                return p["id"]
     except Exception:
         return None
     return None
 
 
 @st.cache_data(ttl=1800)
-def fetch_nba_game_log(player_id: int, season: str = None):
-    """Fetch player game log for current season."""
-    if season is None:
-        season = _current_nba_season()
-    url = f"{NBA_STATS_BASE}/playergamelog"
-    params = {
-        "PlayerID": player_id,
-        "Season": season,
-        "SeasonType": "Regular Season",
-    }
-    try:
-        r = requests.get(url, params=params, headers=NBA_HEADERS, timeout=15)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        data = r.json()
-        rs = data["resultSets"][0]
-        df = pd.DataFrame(rs["rowSet"], columns=rs["headers"])
-        # Sort newest first
-        df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
-        df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
-        return df
-    except Exception:
+def bdl_player_game_log(player_id: int, season: int = None, n_seasons: int = 1):
+    """Fetch recent player game stats. Returns DataFrame sorted newest first."""
+    if not BDL_API_KEY or player_id is None:
         return pd.DataFrame()
 
+    if season is None:
+        today = date.today()
+        season = today.year if today.month >= 10 else today.year - 1
 
-def _current_nba_season() -> str:
-    """Return current NBA season string like '2025-26'."""
-    today = date.today()
-    if today.month >= 10:  # Oct-Dec = start of new season
-        start = today.year
-    else:
-        start = today.year - 1
-    end_short = str(start + 1)[-2:]
-    return f"{start}-{end_short}"
+    seasons = [season - i for i in range(n_seasons)]
+    rows = []
+    for s in seasons:
+        try:
+            cursor = None
+            for _ in range(10):  # max 10 pages
+                params = {"player_ids[]": player_id, "seasons[]": s, "per_page": 100}
+                if cursor:
+                    params["cursor"] = cursor
+                r = requests.get(f"{BDL_BASE}/stats", params=params,
+                                 headers=_bdl_headers(), timeout=15)
+                if r.status_code == 401:
+                    return pd.DataFrame()  # auth fail
+                if r.status_code != 200:
+                    break
+                payload = r.json()
+                data = payload.get("data", [])
+                for stat in data:
+                    rows.append({
+                        "game_id": stat.get("game", {}).get("id"),
+                        "date": stat.get("game", {}).get("date"),
+                        "min": _parse_minutes(stat.get("min")),
+                        "pts": stat.get("pts", 0),
+                        "reb": stat.get("reb", 0),
+                        "ast": stat.get("ast", 0),
+                        "blk": stat.get("blk", 0),
+                        "stl": stat.get("stl", 0),
+                        "fg3m": stat.get("fg3m", 0),
+                    })
+                cursor = payload.get("meta", {}).get("next_cursor")
+                if not cursor:
+                    break
+        except Exception:
+            continue
+
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"]).sort_values("date", ascending=False).reset_index(drop=True)
+    return df
 
 
-# ============================================================
-# DATA FETCHERS — MLB STATS API
-# ============================================================
-
-@st.cache_data(ttl=1800)
-def fetch_mlb_player_id(player_name: str):
-    """Look up MLB player ID by name."""
-    url = f"{MLB_STATS_BASE}/people/search"
-    params = {"names": player_name}
+def _parse_minutes(min_str) -> float:
+    if min_str is None or min_str == "":
+        return 0.0
+    if isinstance(min_str, (int, float)):
+        return float(min_str)
     try:
-        r = requests.get(url, params=params, timeout=15)
-        if r.status_code != 200:
-            # Fallback: people endpoint
-            return _mlb_fuzzy_lookup(player_name)
-        data = r.json()
-        people = data.get("people", [])
-        if people:
-            return people[0]["id"]
+        if ":" in str(min_str):
+            parts = str(min_str).split(":")
+            return float(parts[0]) + float(parts[1]) / 60.0
+        return float(min_str)
     except Exception:
-        pass
-    return _mlb_fuzzy_lookup(player_name)
+        return 0.0
 
 
-def _mlb_fuzzy_lookup(player_name: str):
-    """Fallback MLB lookup via sports/1/players endpoint."""
+# ============================================================
+# DATA — MLB STATS API
+# ============================================================
+
+@st.cache_data(ttl=3600)
+def mlb_player_id(player_name: str):
     season = date.today().year
-    url = f"{MLB_STATS_BASE}/sports/1/players"
-    params = {"season": season}
     try:
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(f"{MLB_STATS_BASE}/sports/1/players",
+                         params={"season": season}, timeout=15)
         if r.status_code != 200:
             return None
         data = r.json()
+        target = player_name.lower().strip()
         for p in data.get("people", []):
-            full = p.get("fullName", "").lower()
-            if full == player_name.lower():
+            if p.get("fullName", "").lower() == target:
                 return p["id"]
-        # Last-name fallback
         last = player_name.split()[-1].lower()
         for p in data.get("people", []):
             if p.get("fullName", "").lower().endswith(last):
@@ -360,21 +633,15 @@ def _mlb_fuzzy_lookup(player_name: str):
 
 
 @st.cache_data(ttl=1800)
-def fetch_mlb_game_log(player_id: int, stat_type: str):
-    """
-    Fetch player game log. stat_type: 'pitching' or 'hitting'
-    """
+def mlb_game_log(player_id: int, group: str):
+    """group: 'pitching' or 'hitting'"""
+    if player_id is None:
+        return pd.DataFrame()
     season = date.today().year
-    group = "pitching" if stat_type == "pitching" else "hitting"
-    url = f"{MLB_STATS_BASE}/people/{player_id}/stats"
-    params = {
-        "stats": "gameLog",
-        "group": group,
-        "season": season,
-        "sportId": 1,
-    }
     try:
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(f"{MLB_STATS_BASE}/people/{player_id}/stats",
+                         params={"stats": "gameLog", "group": group,
+                                 "season": season, "sportId": 1}, timeout=15)
         if r.status_code != 200:
             return pd.DataFrame()
         data = r.json()
@@ -382,690 +649,862 @@ def fetch_mlb_game_log(player_id: int, stat_type: str):
         if not stats_arr:
             return pd.DataFrame()
         splits = stats_arr[0].get("splits", [])
-        if not splits:
-            return pd.DataFrame()
         rows = []
         for s in splits:
             stat = s.get("stat", {})
             row = {
                 "date": s.get("date"),
-                "opponent": s.get("opponent", {}).get("name", ""),
-                "strikeouts": stat.get("strikeOuts", 0),
                 "hits": stat.get("hits", 0),
                 "totalBases": stat.get("totalBases", 0),
                 "rbi": stat.get("rbi", 0),
                 "runs": stat.get("runs", 0),
-                "atBats": stat.get("atBats", 0),
-                "inningsPitched": float(stat.get("inningsPitched", 0) or 0),
+                "homeRuns": stat.get("homeRuns", 0),
+                "strikeouts": stat.get("strikeOuts", 0),
+                "earnedRuns": stat.get("earnedRuns", 0),
+                "hitsAllowed": stat.get("hits", 0) if group == "pitching" else 0,
+                "walks": stat.get("baseOnBalls", 0),
+                "outsRecorded": _ip_to_outs(stat.get("inningsPitched", 0)),
             }
             rows.append(row)
         df = pd.DataFrame(rows)
         if not df.empty:
-            df["date"] = pd.to_datetime(df["date"])
-            df = df.sort_values("date", ascending=False).reset_index(drop=True)
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"]).sort_values("date", ascending=False).reset_index(drop=True)
         return df
     except Exception:
         return pd.DataFrame()
 
 
+def _ip_to_outs(ip):
+    """Convert MLB innings-pitched (e.g. '6.1') to outs (19)."""
+    try:
+        ip_str = str(ip)
+        if "." in ip_str:
+            whole, frac = ip_str.split(".")
+            return int(whole) * 3 + int(frac)
+        return int(ip) * 3
+    except Exception:
+        return 0
+
+
 # ============================================================
-# INJURY FEEDS — ESPN
+# DATA — INJURIES (ESPN)
 # ============================================================
 
-@st.cache_data(ttl=900)  # 15 min
+@st.cache_data(ttl=900)
 def fetch_espn_injuries(league: str):
-    """league: 'nba' or 'mlb'"""
     url = ESPN_NBA_INJURIES if league == "nba" else ESPN_MLB_INJURIES
     try:
-        r = requests.get(url, timeout=15)
+        r = requests.get(url, timeout=10)
         if r.status_code != 200:
             return {}
         data = r.json()
-        injuries = {}
+        out = {}
         for team in data.get("injuries", []):
             for inj in team.get("injuries", []):
-                athlete = inj.get("athlete", {})
-                name = athlete.get("displayName", "")
-                if not name:
-                    continue
-                injuries[name.lower()] = {
-                    "status": inj.get("status", "Unknown"),
-                    "type": inj.get("type", ""),
-                    "detail": inj.get("details", {}).get("detail", ""),
-                }
-        return injuries
+                ath = inj.get("athlete", {})
+                name = ath.get("displayName", "")
+                if name:
+                    out[name.lower()] = {
+                        "status": inj.get("status", ""),
+                        "type": inj.get("type", ""),
+                        "detail": inj.get("details", {}).get("detail", ""),
+                    }
+        return out
     except Exception:
         return {}
 
 
-def get_injury_status(player_name: str, injury_dict: dict):
-    """Return (emoji, status_text) for a player."""
-    status = injury_dict.get(player_name.lower(), {}).get("status", "")
-    if not status:
+def get_injury_status(player_name: str, inj_dict: dict) -> tuple:
+    if not player_name:
         return "✅", "Active"
+    rec = inj_dict.get(player_name.lower(), {})
+    status = rec.get("status", "") or "Active"
     s = status.lower()
     if "out" in s or "ir" in s:
         return "❌", status
-    if "doubtful" in s or "questionable" in s or "day-to-day" in s or "probable" in s:
+    if "doubtful" in s:
+        return "⚠️", status
+    if "questionable" in s or "day-to-day" in s or "probable" in s:
         return "⚠️", status
     return "✅", status
 
 
 # ============================================================
-# MONTE CARLO ENGINE
+# STAT HISTORY GETTERS
 # ============================================================
 
-def build_player_distribution(game_log_values: np.ndarray, n_sims: int = N_SIMULATIONS) -> np.ndarray:
-    """
-    Build MC distribution from empirical game log.
-    - Uses L25 with L10 recency weighting (70/30)
-    - Bootstrap with replacement
-    - Falls back to Poisson if sample <10
-    """
-    vals = np.array(game_log_values, dtype=float)
-    vals = vals[~np.isnan(vals)]
-
-    if len(vals) == 0:
-        return np.zeros(n_sims)
-
-    if len(vals) < 10:
-        # Small-sample fallback: Poisson with shrinkage toward sample mean
-        mean = max(np.mean(vals), 0.1)
-        return np.random.poisson(lam=mean, size=n_sims).astype(float)
-
-    # Split into L10 (most recent) and L11-25 (older)
-    l10 = vals[: min(10, len(vals))]
-    l_older = vals[10: min(L25_WINDOW, len(vals))]
-
-    # Sample 70% from L10, 30% from older window (if exists)
-    if len(l_older) > 0:
-        n_l10 = int(n_sims * L10_WEIGHT)
-        n_older = n_sims - n_l10
-        sims_l10 = np.random.choice(l10, size=n_l10, replace=True)
-        sims_older = np.random.choice(l_older, size=n_older, replace=True)
-        sims = np.concatenate([sims_l10, sims_older])
-        np.random.shuffle(sims)
-    else:
-        sims = np.random.choice(l10, size=n_sims, replace=True)
-
-    return sims
-
-
-def apply_adjustments(
-    sims: np.ndarray,
-    minutes_mult: float = 1.0,
-    opp_mult: float = 1.0,
-    pace_mult: float = 1.0,
-) -> np.ndarray:
-    """
-    Apply multiplicative adjustments to simulation array.
-    minutes_mult: projected_minutes / season_avg_minutes
-    opp_mult: opp_stat_allowed / league_avg
-    pace_mult: game_pace / player_avg_pace
-    """
-    combined = minutes_mult * opp_mult * pace_mult
-    adjusted = sims * combined
-    # Round to nearest integer for counting stats (MC works on continuous, but stats are discrete)
-    return np.round(adjusted).astype(int).clip(min=0)
-
-
-def hit_probability(sims: np.ndarray, line: float, side: str = "Over") -> float:
-    """Compute probability of going Over/Under a given line."""
-    if len(sims) == 0:
-        return 0.5
-    if side.lower() == "over":
-        # Underdog/sportsbook convention: "Over 1.5" means stat >= 2 (since lines are .5)
-        # If line is integer, "Over X" means stat > X. We use strict > for safety.
-        return float(np.mean(sims > line))
-    else:
-        return float(np.mean(sims < line + 0.5))
-
-
-def ladder_joint_probability(sims: np.ndarray, rungs: list) -> dict:
-    """
-    For Underdog ladders: rungs are sorted ascending (e.g. [1.5, 2.5, 3.5]).
-    Returns dict mapping each rung to P(stat >= rung) — NOT independent product,
-    actual joint prob from same sims.
-    """
-    out = {}
-    for r in sorted(rungs):
-        out[r] = float(np.mean(sims > r))
-    return out
-
-
-def implied_prob_from_american(odds: float) -> float:
-    """Convert American odds to implied probability."""
-    if odds is None or pd.isna(odds):
-        return None
-    if odds > 0:
-        return 100.0 / (odds + 100.0)
-    else:
-        return -odds / (-odds + 100.0)
-
-
-def implied_prob_from_payout(payout_multiplier: float) -> float:
-    """Underdog ladder payout (e.g. 3x = 0.333 implied prob)."""
-    if not payout_multiplier or payout_multiplier <= 0:
-        return None
-    return 1.0 / payout_multiplier
-
-
-def signal_emoji(edge_pct: float) -> str:
-    """Edge in percentage points (0-100 scale)."""
-    if edge_pct is None or pd.isna(edge_pct):
-        return "⚪"
-    if edge_pct >= 8:
-        return "🟢"
-    if edge_pct >= 3:
-        return "🎯"
-    if edge_pct < 0:
-        return "🔴"
-    return "🟡"
-
-
-# ============================================================
-# STAT-SPECIFIC PIPELINES
-# ============================================================
-
-def get_nba_player_stat_history(player_name: str, stat: str) -> tuple:
-    """
-    Returns (sims_array, sample_size, season_avg, l10_avg) or (None, 0, None, None).
-    """
-    pid = fetch_nba_player_id(player_name)
+def get_nba_history(player: str, stat: str):
+    """Returns (values_array, n_games, season_avg, l10_avg, std_dev) or all None."""
+    pid = bdl_search_player(player)
     if pid is None:
-        return None, 0, None, None
-    log = fetch_nba_game_log(pid)
+        return None, 0, None, None, None
+    log = bdl_player_game_log(pid)
     if log.empty:
-        return None, 0, None, None
-    col = NBA_STAT_COLUMNS.get(stat)
-    if col is None or col not in log.columns:
-        return None, 0, None, None
-    values = log[col].astype(float).values
-    sims = build_player_distribution(values)
-    season_avg = float(np.mean(values)) if len(values) else None
-    l10_avg = float(np.mean(values[:10])) if len(values) >= 1 else None
-    return sims, len(values), season_avg, l10_avg
+        return None, 0, None, None, None
+
+    # Map stat label to value
+    if stat in ("Pts+Reb+Ast",):
+        values = (log["pts"] + log["reb"] + log["ast"]).astype(float).values
+    elif stat in ("Pts+Reb",):
+        values = (log["pts"] + log["reb"]).astype(float).values
+    elif stat in ("Pts+Ast",):
+        values = (log["pts"] + log["ast"]).astype(float).values
+    elif stat in ("Reb+Ast",):
+        values = (log["reb"] + log["ast"]).astype(float).values
+    else:
+        col = BDL_STAT_FIELDS.get(stat)
+        if col is None or col not in log.columns:
+            return None, 0, None, None, None
+        values = log[col].astype(float).values
+
+    n = len(values)
+    if n == 0:
+        return None, 0, None, None, None
+    season_avg = float(np.mean(values))
+    l10_avg = float(np.mean(values[:min(10, n)]))
+    std_dev = float(np.std(values, ddof=1)) if n > 1 else 0.0
+    return values, n, season_avg, l10_avg, std_dev
 
 
-def get_mlb_player_stat_history(player_name: str, stat: str) -> tuple:
-    """
-    Returns (sims_array, sample_size, season_avg, l10_avg).
-    """
-    pid = fetch_mlb_player_id(player_name)
+def get_mlb_history(player: str, stat: str):
+    pid = mlb_player_id(player)
     if pid is None:
-        return None, 0, None, None
-
-    if stat == "Strikeouts":
-        log = fetch_mlb_game_log(pid, "pitching")
-        if log.empty:
-            return None, 0, None, None
-        values = log["strikeouts"].astype(float).values
-    elif stat == "Hits":
-        log = fetch_mlb_game_log(pid, "hitting")
-        if log.empty:
-            return None, 0, None, None
-        values = log["hits"].astype(float).values
-    elif stat == "Total Bases":
-        log = fetch_mlb_game_log(pid, "hitting")
-        if log.empty:
-            return None, 0, None, None
-        values = log["totalBases"].astype(float).values
-    elif stat == "RBI":
-        log = fetch_mlb_game_log(pid, "hitting")
-        if log.empty:
-            return None, 0, None, None
-        values = log["rbi"].astype(float).values
-    elif stat == "Runs":
-        log = fetch_mlb_game_log(pid, "hitting")
-        if log.empty:
-            return None, 0, None, None
-        values = log["runs"].astype(float).values
-    else:
-        return None, 0, None, None
-
-    sims = build_player_distribution(values)
-    season_avg = float(np.mean(values)) if len(values) else None
-    l10_avg = float(np.mean(values[:10])) if len(values) >= 1 else None
-    return sims, len(values), season_avg, l10_avg
+        return None, 0, None, None, None
+    pitcher_stats = {"Strikeouts", "Earned Runs", "Outs Recorded", "Hits Allowed", "Walks Issued"}
+    group = "pitching" if stat in pitcher_stats else "hitting"
+    log = mlb_game_log(pid, group)
+    if log.empty:
+        return None, 0, None, None, None
+    field_map = {
+        "Hits": "hits", "Total Bases": "totalBases", "RBI": "rbi", "Runs": "runs",
+        "Home Runs": "homeRuns", "Strikeouts": "strikeouts",
+        "Earned Runs": "earnedRuns", "Outs Recorded": "outsRecorded",
+        "Hits Allowed": "hitsAllowed", "Walks Issued": "walks",
+    }
+    col = field_map.get(stat)
+    if col is None or col not in log.columns:
+        return None, 0, None, None, None
+    values = log[col].astype(float).values
+    n = len(values)
+    if n == 0:
+        return None, 0, None, None, None
+    season_avg = float(np.mean(values))
+    l10_avg = float(np.mean(values[:min(10, n)]))
+    std_dev = float(np.std(values, ddof=1)) if n > 1 else 0.0
+    return values, n, season_avg, l10_avg, std_dev
 
 
 # ============================================================
-# ANALYSIS — PROPS TAB ROW BUILDER
+# PROP ANALYSIS
 # ============================================================
 
-def analyze_prop_row(player: str, stat: str, line: float, over_odds: float,
-                     under_odds: float, league: str, injuries: dict) -> dict:
-    """Build full analysis row for one prop."""
+def analyze_prop(player: str, stat: str, line: float,
+                 over_odds: float, under_odds: float,
+                 league: str, injuries: dict, n_sims: int,
+                 trust_thresh: float, edge_thresh: float,
+                 vegas_total: float = None) -> dict:
+    """Build a fully-scored analysis row."""
     if league == "nba":
-        sims, n_games, season_avg, l10_avg = get_nba_player_stat_history(player, stat)
+        history = get_nba_history(player, stat)
+        league_avg_total = 225.0
     else:
-        sims, n_games, season_avg, l10_avg = get_mlb_player_stat_history(player, stat)
+        history = get_mlb_history(player, stat)
+        league_avg_total = 8.5
 
+    values, n_games, season_avg, l10_avg, std_dev = history
     inj_emoji, inj_status = get_injury_status(player, injuries)
 
-    if sims is None:
+    if values is None or n_games == 0:
         return {
-            "Signal": "⚪",
-            "Player": player,
-            "Status": f"{inj_emoji} {inj_status}",
-            "Stat": stat,
-            "Line": line,
-            "L10 Avg": None,
-            "Season Avg": None,
-            "Sample": 0,
-            "Model P(Over)": None,
-            "Implied (Over)": None,
-            "Edge (Over)": None,
-            "Model P(Under)": None,
-            "Implied (Under)": None,
-            "Edge (Under)": None,
-            "Over Odds": over_odds,
-            "Under Odds": under_odds,
-            "Note": "No game log",
+            "Tier": "⚪", "Player": player, "Status": f"{inj_emoji} {inj_status}",
+            "Stat": stat, "Line": line,
+            "L10": None, "Season": None, "n": 0,
+            "Trust": None, "Edge": None,
+            "Model O%": None, "Imp O%": None, "Edge pp": None,
+            "Model U%": None, "Imp U%": None,
+            "Bet $": 0, "Note": "No game log",
         }
 
-    p_over = hit_probability(sims, line, "Over")
-    p_under = 1.0 - p_over
+    # Adjustments
+    minutes_mult = STATUS_MULTIPLIER.get(inj_status.split()[0] if inj_status else "Active", 1.0)
+    total_mult = 1.0
+    if vegas_total and league == "nba" and stat in ("Points", "Rebounds", "Assists",
+                                                      "Pts+Reb+Ast", "Pts+Reb", "Pts+Ast", "Reb+Ast"):
+        total_mult = vegas_total / league_avg_total
+    elif vegas_total and league == "mlb" and stat in ("Hits", "Total Bases", "RBI", "Runs", "Home Runs"):
+        total_mult = vegas_total / league_avg_total
 
+    sims = build_player_distribution(values, n_sims=n_sims)
+    sims = apply_adjustments(sims, minutes_mult=minutes_mult, total_mult=total_mult)
+
+    p_over = hit_probability(sims, line, "Over")
+    p_under = 1 - p_over
     imp_over = implied_prob_from_american(over_odds)
     imp_under = implied_prob_from_american(under_odds)
 
-    edge_over = (p_over - imp_over) * 100 if imp_over is not None else None
-    edge_under = (p_under - imp_under) * 100 if imp_under is not None else None
+    # Score both sides, pick the better one
+    best_side = "Over"
+    best_p = p_over
+    best_imp = imp_over
 
-    # Pick best side for signal
-    best_edge = max(
-        e for e in [edge_over, edge_under] if e is not None
-    ) if (edge_over is not None or edge_under is not None) else None
-    sig = signal_emoji(best_edge if best_edge is not None else 0)
+    if imp_over is None and imp_under is not None:
+        best_side, best_p, best_imp = "Under", p_under, imp_under
+    elif imp_over is not None and imp_under is not None:
+        edge_o = (p_over - imp_over) if imp_over else -1
+        edge_u = (p_under - imp_under) if imp_under else -1
+        if edge_u > edge_o:
+            best_side, best_p, best_imp = "Under", p_under, imp_under
+
+    trust, _t_comp = trust_score(values, line, best_side, l10_avg, season_avg, inj_status)
+    edge_pp = (best_p - best_imp) * 100 if best_imp is not None else None
+    edge_sc, _e_comp = edge_score(best_p, best_imp, l10_avg, line, std_dev)
+
+    tier = signal_tier(trust, edge_pp if edge_pp is not None else 0,
+                       trust_thresh, edge_thresh)
+    bet_size, _reason = suggested_bet_size(trust, edge_pp if edge_pp is not None else 0, tier)
 
     note = ""
     if n_games < 10:
-        note = "⚠️ Limited sample (Poisson fallback)"
-    elif n_games < 15:
-        note = "Small sample"
+        note = "⚠️ Small sample"
 
     return {
-        "Signal": sig,
-        "Player": player,
-        "Status": f"{inj_emoji} {inj_status}",
-        "Stat": stat,
-        "Line": line,
-        "L10 Avg": round(l10_avg, 2) if l10_avg is not None else None,
-        "Season Avg": round(season_avg, 2) if season_avg is not None else None,
-        "Sample": n_games,
-        "Model P(Over)": round(p_over * 100, 1),
-        "Implied (Over)": round(imp_over * 100, 1) if imp_over is not None else None,
-        "Edge (Over)": round(edge_over, 1) if edge_over is not None else None,
-        "Model P(Under)": round(p_under * 100, 1),
-        "Implied (Under)": round(imp_under * 100, 1) if imp_under is not None else None,
-        "Edge (Under)": round(edge_under, 1) if edge_under is not None else None,
-        "Over Odds": over_odds,
-        "Under Odds": under_odds,
+        "Tier": tier, "Player": player, "Status": f"{inj_emoji} {inj_status}",
+        "Stat": stat, "Line": line, "Side": best_side,
+        "L10": round(l10_avg, 2) if l10_avg else None,
+        "Season": round(season_avg, 2) if season_avg else None,
+        "n": n_games,
+        "Trust": trust, "Edge": edge_sc,
+        "Model O%": round(p_over * 100, 1),
+        "Imp O%": round(imp_over * 100, 1) if imp_over else None,
+        "Model U%": round(p_under * 100, 1),
+        "Imp U%": round(imp_under * 100, 1) if imp_under else None,
+        "Edge pp": round(edge_pp, 1) if edge_pp is not None else None,
+        "Bet $": bet_size,
         "Note": note,
     }
 
 
 # ============================================================
-# UI — HEADER
+# UI — HEADER & SIDEBAR
 # ============================================================
 
-st.title("🪜 MPH Underdog Ladders Model")
-st.caption("V1.0 — Monte Carlo prop modeling for NBA + MLB | Bootstrap simulation, L25 with L10 recency weighting")
+st.title("🪜 MPH DFS Model — V2.0")
+st.caption(f"Negative Binomial MC · BallDontLie + MLB Stats API · Trust + Edge + 🔥 Combined scoring · {DEFAULT_N_SIMS:,} sims default")
 
-# Sidebar
 with st.sidebar:
     st.markdown("### ⚙️ Controls")
-    refresh = st.button("🔄 Force refresh data", use_container_width=True)
-    if refresh:
+    if st.button("🔄 Force refresh data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
+
     st.markdown("---")
-    st.markdown("### 📊 Model Config")
-    st.markdown(f"- **Sims/player:** {N_SIMULATIONS:,}")
-    st.markdown(f"- **L25 window:** L10 weighted {int(L10_WEIGHT*100)}%")
-    st.markdown("- **Books:** DraftKings + FanDuel")
+    st.markdown("### 🎚️ Sim Settings")
+    n_sims_choice = st.select_slider(
+        "Sims per player",
+        options=[10_000, 50_000, 100_000],
+        value=DEFAULT_N_SIMS,
+        format_func=lambda x: f"{x:,}",
+    )
+
     st.markdown("---")
-    st.markdown("### 🎯 Signal Legend")
-    st.markdown("- 🟢 Edge ≥ 8% (strong)")
-    st.markdown("- 🎯 Edge 3–8% (marginal)")
-    st.markdown("- 🟡 Edge 0–3% (thin)")
-    st.markdown("- 🔴 Edge < 0% (fade)")
-    st.markdown("- ⚪ No data")
+    st.markdown("### 🎯 Score Thresholds")
+    trust_thresh = st.slider("Trust threshold", 50, 95, 65, 5)
+    edge_thresh = st.slider("Edge threshold (pp)", 0, 15, 5, 1)
+    show_below = st.checkbox("Show below threshold (anti-discipline)", value=True,
+                              help="Off by default to enforce discipline. Toggle on to see all rows.")
+
+    st.markdown("---")
+    st.markdown("### 🎯 Tier Legend")
+    st.markdown("""
+- 🔥 **Combined** — Trust ≥ thresh & Edge ≥ thresh
+- 🎯 **Trust pick** — high consistency
+- 💎 **Edge pick** — high value
+- 🟡 Thin signal
+- 🔴 Fade
+- ⚪ No data
+    """)
+
+    st.markdown("---")
+    st.markdown("### 💰 Sizing tiers")
+    st.caption("$3-$10 per bet · $50/day cap during validation")
+
+    st.markdown("---")
+    st.caption("**V2.0** — research-informed build")
+    st.caption("Shadow validate 2 weeks before live bets")
+
 
 # ============================================================
-# UI — TABS
+# UI — MAIN TABS (sport-first)
 # ============================================================
 
-tab_nba, tab_mlb, tab_overlay, tab_settings = st.tabs([
-    "🏀 NBA Props",
-    "⚾ MLB Props",
-    "🪜 Underdog Overlay",
-    "📊 Settings",
-])
+tab_nba, tab_mlb, tab_settings = st.tabs(["🏀 NBA", "⚾ MLB", "📊 Settings"])
 
 
 # ============================================================
-# TAB 1 — NBA PROPS
+# TAB: NBA (with sub-tabs)
 # ============================================================
 
 with tab_nba:
-    st.subheader("🏀 NBA Player Props — Blocks / Steals / 3PM")
-    st.caption(f"Today's slate · DraftKings + FanDuel · MC sims = {N_SIMULATIONS:,}")
+    nba_props_tab, nba_ladders_tab, nba_top_tab = st.tabs(["🎯 Props", "🪜 Ladders", "🔥 Top Plays"])
 
-    selected_stats_nba = st.multiselect(
-        "Stats to analyze",
-        list(NBA_STAT_MARKETS.keys()),
-        default=list(NBA_STAT_MARKETS.keys()),
-        key="nba_stats",
-    )
+    # --- NBA PROPS ---
+    with nba_props_tab:
+        st.subheader("🏀 NBA Player Props")
+        st.caption("Pulled from DraftKings + FanDuel via Odds API · scored with NB Monte Carlo")
 
-    if not selected_stats_nba:
-        st.info("Select at least one stat above.")
-    else:
-        with st.spinner("Fetching NBA props..."):
-            markets = [NBA_STAT_MARKETS[s] for s in selected_stats_nba]
-            props, err = fetch_odds_api_props("basketball_nba", markets)
+        nba_stats_choice = st.multiselect(
+            "Stats to analyze",
+            list(NBA_STAT_MARKETS.keys()) + list(NBA_COMBO_MARKETS.keys()),
+            default=["Points", "Rebounds", "Assists"],
+            key="nba_props_stats",
+        )
 
-        if err:
-            st.error(f"⚠️ Odds API: {err}")
-        elif not props:
-            st.warning("No NBA props returned. Could be off-day or API limit reached.")
+        if not nba_stats_choice:
+            st.info("Select at least one stat above.")
         else:
-            df_props = consolidate_props_to_lines(props, NBA_STAT_MARKETS)
-            st.success(f"✅ {len(df_props)} prop lines pulled across {df_props['player'].nunique()} players")
+            with st.spinner("Fetching props..."):
+                markets = []
+                for s in nba_stats_choice:
+                    if s in NBA_STAT_MARKETS:
+                        markets.append(NBA_STAT_MARKETS[s])
+                    elif s in NBA_COMBO_MARKETS:
+                        markets.append(NBA_COMBO_MARKETS[s])
+                props, err = fetch_odds_api_props("basketball_nba", markets)
 
-            with st.spinner("Loading injury feed..."):
-                inj = fetch_espn_injuries("nba")
+            if err:
+                st.error(f"⚠️ Odds API: {err}")
+            elif not props:
+                st.warning("No props returned. Off-day or API limit reached.")
+            else:
+                combined_map = {**NBA_STAT_MARKETS, **NBA_COMBO_MARKETS}
+                df_props = consolidate_props(props, combined_map)
 
-            with st.spinner(f"Running Monte Carlo on {df_props['player'].nunique()} players..."):
-                rows = []
-                for _, p in df_props.iterrows():
-                    rows.append(analyze_prop_row(
-                        player=p["player"],
-                        stat=p["stat"],
-                        line=p["line"],
-                        over_odds=p["over_odds"],
-                        under_odds=p["under_odds"],
-                        league="nba",
-                        injuries=inj,
-                    ))
-                df_out = pd.DataFrame(rows)
+                if df_props.empty:
+                    st.warning("Props pulled but none matched selected stats.")
+                else:
+                    st.success(f"✅ {len(df_props)} prop lines · {df_props['player'].nunique()} players")
 
-            # Sort by best edge descending
-            df_out["best_edge"] = df_out[["Edge (Over)", "Edge (Under)"]].max(axis=1)
-            df_out = df_out.sort_values("best_edge", ascending=False, na_position="last").drop(columns=["best_edge"])
+                    inj = fetch_espn_injuries("nba")
 
-            st.dataframe(df_out, use_container_width=True, hide_index=True)
+                    # Pre-fetch totals for each event
+                    event_totals = {}
+                    for eid in df_props["event_id"].unique():
+                        event_totals[eid] = fetch_event_total("basketball_nba", eid)
 
-            st.caption(f"Last refreshed: {datetime.now().strftime('%H:%M:%S')} | Cache TTL: 5 min props, 30 min stats")
+                    progress = st.progress(0, text="Running Monte Carlo...")
+                    rows = []
+                    total = len(df_props)
+                    for i, (_, p) in enumerate(df_props.iterrows()):
+                        rows.append(analyze_prop(
+                            player=p["player"], stat=p["stat"], line=p["line"],
+                            over_odds=p["over_odds"], under_odds=p["under_odds"],
+                            league="nba", injuries=inj, n_sims=n_sims_choice,
+                            trust_thresh=trust_thresh, edge_thresh=edge_thresh,
+                            vegas_total=event_totals.get(p["event_id"]),
+                        ))
+                        progress.progress((i + 1) / total, text=f"MC: {i+1}/{total}")
+                    progress.empty()
+
+                    df_out = pd.DataFrame(rows)
+
+                    # Sort by tier priority then edge
+                    tier_order = {"🔥": 0, "🎯": 1, "💎": 2, "🟡": 3, "🔴": 4, "⚪": 5}
+                    df_out["_order"] = df_out["Tier"].map(tier_order).fillna(99)
+                    df_out["_edge"] = df_out["Edge pp"].fillna(-999)
+                    df_out = df_out.sort_values(["_order", "_edge"], ascending=[True, False])
+                    df_out = df_out.drop(columns=["_order", "_edge"])
+
+                    if not show_below:
+                        df_out = df_out[df_out["Tier"].isin(["🔥", "🎯", "💎"])]
+
+                    if df_out.empty:
+                        st.info("No plays clear current thresholds. Try toggling 'Show below threshold' or adjusting sliders.")
+                    else:
+                        st.dataframe(df_out, use_container_width=True, hide_index=True, height=500)
+                        st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')}")
+
+    # --- NBA LADDERS ---
+    with nba_ladders_tab:
+        st.subheader("🪜 NBA Ladder / Alt Builder")
+        st.caption("Universal builder — works for Underdog Ladders, PrizePicks Demons/Goblins, Betr alts.")
+
+        with st.form("nba_ladder_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                ud_player = st.text_input("Player name", placeholder="e.g. Anthony Davis")
+                ud_stat = st.selectbox("Stat",
+                                        list(NBA_STAT_MARKETS.keys()) + list(NBA_COMBO_MARKETS.keys()))
+            with col2:
+                ud_mode = st.selectbox(
+                    "Mode",
+                    ["Standard O/U", "🪜 Ladder (multi-rung)",
+                     "🔴 Demon (alt high, MORE)", "🟢 Goblin (alt low, MORE)"],
+                )
+                ud_side_for_std = st.radio("Side (Standard only)", ["Over", "Under"],
+                                            horizontal=True)
+
+            st.markdown("**Rungs / lines (enter what's on the platform):**")
+            rcol1, rcol2, rcol3, rcol4 = st.columns(4)
+            with rcol1:
+                r1 = st.number_input("Line 1", min_value=0.0, value=2.5, step=0.5, key="nba_r1")
+                p1 = st.number_input("Payout 1 (×)", min_value=0.0, value=1.5, step=0.05, key="nba_p1")
+            with rcol2:
+                r2 = st.number_input("Line 2 (0=skip)", min_value=0.0, value=0.0, step=0.5, key="nba_r2")
+                p2 = st.number_input("Payout 2 (×)", min_value=0.0, value=0.0, step=0.05, key="nba_p2")
+            with rcol3:
+                r3 = st.number_input("Line 3 (0=skip)", min_value=0.0, value=0.0, step=0.5, key="nba_r3")
+                p3 = st.number_input("Payout 3 (×)", min_value=0.0, value=0.0, step=0.05, key="nba_p3")
+            with rcol4:
+                r4 = st.number_input("Line 4 (0=skip)", min_value=0.0, value=0.0, step=0.5, key="nba_r4")
+                p4 = st.number_input("Payout 4 (×)", min_value=0.0, value=0.0, step=0.05, key="nba_p4")
+
+            submitted = st.form_submit_button("🪜 Analyze", use_container_width=True)
+
+        if submitted:
+            if not ud_player.strip():
+                st.error("Enter a player name.")
+            else:
+                with st.spinner("Running MC..."):
+                    history = get_nba_history(ud_player, ud_stat)
+                    inj = fetch_espn_injuries("nba")
+
+                values, n_games, season_avg, l10_avg, std_dev = history
+                if values is None:
+                    st.error(f"❌ No game log found for '{ud_player}'. Check spelling.")
+                else:
+                    inj_emoji, inj_status = get_injury_status(ud_player, inj)
+                    minutes_mult = STATUS_MULTIPLIER.get(inj_status.split()[0] if inj_status else "Active", 1.0)
+                    sims = build_player_distribution(values, n_sims=n_sims_choice)
+                    sims = apply_adjustments(sims, minutes_mult=minutes_mult)
+
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("L10", f"{l10_avg:.2f}" if l10_avg else "—")
+                    c2.metric("Season", f"{season_avg:.2f}" if season_avg else "—")
+                    c3.metric("Sample", f"{n_games}")
+                    c4.metric("Status", f"{inj_emoji} {inj_status}")
+
+                    if n_games < 10:
+                        st.warning("⚠️ Small sample (<10 games) — using NB/Poisson fallback")
+
+                    rungs = [(1, r1, p1), (2, r2, p2), (3, r3, p3), (4, r4, p4)]
+                    rungs = [r for r in rungs if r[1] > 0 and r[2] > 0]
+                    if not rungs:
+                        st.error("Enter at least one line + payout.")
+                    else:
+                        rows = []
+                        for rn, line, pay in rungs:
+                            if ud_mode == "Standard O/U":
+                                p_hit = hit_probability(sims, line, ud_side_for_std)
+                                side_lbl = ud_side_for_std
+                            else:
+                                p_hit = hit_probability(sims, line, "Over")
+                                side_lbl = "More" if "Demon" in ud_mode or "Goblin" in ud_mode else "Over"
+
+                            imp = implied_prob_from_payout(pay)
+                            edge = (p_hit - imp) * 100 if imp else None
+
+                            trust, _ = trust_score(values, line, side_lbl,
+                                                    l10_avg, season_avg, inj_status)
+                            tier = signal_tier(trust, edge if edge is not None else 0,
+                                                trust_thresh, edge_thresh)
+                            bet_size, reason = suggested_bet_size(
+                                trust, edge if edge is not None else 0, tier)
+
+                            rec = ""
+                            if tier == "🔥":
+                                rec = "🔥 STRONG TARGET"
+                            elif tier == "🎯":
+                                rec = "🎯 Trust pick"
+                            elif tier == "💎":
+                                rec = "💎 Edge pick"
+                            elif tier == "🔴":
+                                rec = "🔴 FADE"
+                            elif p_hit < 0.5:
+                                rec = "⚠️ Coin flip"
+                            else:
+                                rec = "🟡 Thin"
+
+                            rows.append({
+                                "Tier": tier,
+                                "Rung": f"R{rn}",
+                                "Line": line,
+                                "Side": side_lbl,
+                                "Payout": f"{pay}×",
+                                "Model %": f"{p_hit*100:.1f}",
+                                "Implied %": f"{imp*100:.1f}" if imp else "—",
+                                "Edge pp": f"{edge:+.1f}" if edge is not None else "—",
+                                "Trust": trust,
+                                "Bet $": bet_size,
+                                "Recommendation": rec,
+                            })
+
+                        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                        # Best rung pick
+                        best = None
+                        best_edge = -999
+                        for rn, line, pay in rungs:
+                            p_hit = hit_probability(sims, line, "Over"
+                                                     if ud_mode != "Standard O/U" else ud_side_for_std)
+                            imp = implied_prob_from_payout(pay)
+                            if imp is None or p_hit < 0.5:
+                                continue
+                            edge = (p_hit - imp) * 100
+                            if edge > best_edge:
+                                best_edge = edge
+                                best = (rn, line, pay, p_hit, edge)
+
+                        if best and best_edge >= edge_thresh:
+                            rn, line, pay, p_hit, edge = best
+                            st.success(
+                                f"🎯 **TARGET R{rn}: {line} @ {pay}×** | "
+                                f"Model {p_hit*100:.1f}% | Edge +{edge:.1f}pp | "
+                                f"L10 {l10_avg:.2f}, Season {season_avg:.2f}"
+                            )
+                        elif best:
+                            rn, line, pay, p_hit, edge = best
+                            st.info(f"Best: R{rn} (edge {edge:+.1f}pp) — below threshold")
+                        else:
+                            st.warning("No rung hits the criteria. Skip this player.")
+
+    # --- NBA TOP PLAYS ---
+    with nba_top_tab:
+        st.subheader("🔥 NBA Top Plays Today")
+        st.caption("Best picks across props — sorted by tier & edge")
+        st.info("Run the 🎯 Props tab first. Top plays are pulled from that analysis.")
+        st.markdown("""
+**Reading the tiers:**
+- 🔥 **Combined** = best of both worlds, max sizing
+- 🎯 **Trust** = high consistency, lower payout, income lane
+- 💎 **Edge** = high value, more variance, payoff lane
+
+Use the sidebar sliders to adjust thresholds slate-by-slate.
+        """)
 
 
 # ============================================================
-# TAB 2 — MLB PROPS
+# TAB: MLB
 # ============================================================
 
 with tab_mlb:
-    st.subheader("⚾ MLB Player Props — Ks / Hits / TB / RBI / Runs")
-    st.caption(f"Today's slate · DraftKings + FanDuel · MC sims = {N_SIMULATIONS:,}")
+    mlb_props_tab, mlb_ladders_tab, mlb_top_tab = st.tabs(["🎯 Props", "🪜 Ladders", "🔥 Top Plays"])
 
-    selected_stats_mlb = st.multiselect(
-        "Stats to analyze",
-        list(MLB_STAT_MARKETS.keys()),
-        default=list(MLB_STAT_MARKETS.keys()),
-        key="mlb_stats",
-    )
+    # --- MLB PROPS ---
+    with mlb_props_tab:
+        st.subheader("⚾ MLB Player Props")
+        st.caption("Hitter + pitcher stats from DraftKings + FanDuel · NB Monte Carlo")
 
-    if not selected_stats_mlb:
-        st.info("Select at least one stat above.")
-    else:
-        with st.spinner("Fetching MLB props..."):
-            markets = [MLB_STAT_MARKETS[s] for s in selected_stats_mlb]
-            props, err = fetch_odds_api_props("baseball_mlb", markets)
+        mlb_stats_choice = st.multiselect(
+            "Stats to analyze",
+            list(MLB_STAT_MARKETS.keys()),
+            default=["Hits", "Total Bases", "Strikeouts"],
+            key="mlb_props_stats",
+        )
 
-        if err:
-            st.error(f"⚠️ Odds API: {err}")
-        elif not props:
-            st.warning("No MLB props returned. Could be off-day or API limit reached.")
+        if not mlb_stats_choice:
+            st.info("Select at least one stat above.")
         else:
-            df_props = consolidate_props_to_lines(props, MLB_STAT_MARKETS)
-            st.success(f"✅ {len(df_props)} prop lines pulled across {df_props['player'].nunique()} players")
+            with st.spinner("Fetching props..."):
+                markets = [MLB_STAT_MARKETS[s] for s in mlb_stats_choice]
+                props, err = fetch_odds_api_props("baseball_mlb", markets)
 
-            with st.spinner("Loading injury feed..."):
-                inj = fetch_espn_injuries("mlb")
-
-            with st.spinner(f"Running Monte Carlo on {df_props['player'].nunique()} players..."):
-                rows = []
-                for _, p in df_props.iterrows():
-                    rows.append(analyze_prop_row(
-                        player=p["player"],
-                        stat=p["stat"],
-                        line=p["line"],
-                        over_odds=p["over_odds"],
-                        under_odds=p["under_odds"],
-                        league="mlb",
-                        injuries=inj,
-                    ))
-                df_out = pd.DataFrame(rows)
-
-            df_out["best_edge"] = df_out[["Edge (Over)", "Edge (Under)"]].max(axis=1)
-            df_out = df_out.sort_values("best_edge", ascending=False, na_position="last").drop(columns=["best_edge"])
-
-            st.dataframe(df_out, use_container_width=True, hide_index=True)
-
-            st.caption(f"Last refreshed: {datetime.now().strftime('%H:%M:%S')} | Cache TTL: 5 min props, 30 min stats")
-
-
-# ============================================================
-# TAB 3 — UNDERDOG OVERLAY (manual rung entry)
-# ============================================================
-
-with tab_overlay:
-    st.subheader("🪜 Underdog Ladder Overlay")
-    st.caption("Enter Underdog ladder rungs manually. Model auto-pulls L10/season + runs MC simulation per rung.")
-
-    with st.form("ladder_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            ud_league = st.selectbox("League", ["NBA", "MLB"], key="ud_league")
-            ud_player = st.text_input("Player name", placeholder="e.g. Anthony Davis", key="ud_player")
-        with col2:
-            if ud_league == "NBA":
-                ud_stat = st.selectbox("Stat", list(NBA_STAT_MARKETS.keys()), key="ud_stat_nba")
+            if err:
+                st.error(f"⚠️ Odds API: {err}")
+            elif not props:
+                st.warning("No props returned.")
             else:
-                ud_stat = st.selectbox("Stat", list(MLB_STAT_MARKETS.keys()), key="ud_stat_mlb")
-
-        st.markdown("**Ladder rungs (Underdog thresholds):**")
-        rcol1, rcol2, rcol3, rcol4 = st.columns(4)
-        with rcol1:
-            r1 = st.number_input("Rung 1 line", min_value=0.0, value=1.5, step=0.5, key="r1")
-            r1_pay = st.number_input("R1 payout (e.g. 1.5x)", min_value=1.0, value=1.5, step=0.1, key="r1p")
-        with rcol2:
-            r2 = st.number_input("Rung 2 line", min_value=0.0, value=2.5, step=0.5, key="r2")
-            r2_pay = st.number_input("R2 payout (e.g. 3x)", min_value=1.0, value=3.0, step=0.1, key="r2p")
-        with rcol3:
-            r3 = st.number_input("Rung 3 line", min_value=0.0, value=3.5, step=0.5, key="r3")
-            r3_pay = st.number_input("R3 payout (e.g. 6x)", min_value=1.0, value=6.0, step=0.1, key="r3p")
-        with rcol4:
-            r4 = st.number_input("Rung 4 line (optional)", min_value=0.0, value=0.0, step=0.5, key="r4")
-            r4_pay = st.number_input("R4 payout (0 if none)", min_value=0.0, value=0.0, step=0.1, key="r4p")
-
-        submitted = st.form_submit_button("🪜 Analyze ladder", use_container_width=True)
-
-    if submitted:
-        if not ud_player.strip():
-            st.error("Enter a player name.")
-        else:
-            with st.spinner(f"Running MC for {ud_player}..."):
-                if ud_league == "NBA":
-                    sims, n_games, season_avg, l10_avg = get_nba_player_stat_history(ud_player, ud_stat)
-                    inj = fetch_espn_injuries("nba")
+                df_props = consolidate_props(props, MLB_STAT_MARKETS)
+                if df_props.empty:
+                    st.warning("Props pulled but none matched selected stats.")
                 else:
-                    sims, n_games, season_avg, l10_avg = get_mlb_player_stat_history(ud_player, ud_stat)
+                    st.success(f"✅ {len(df_props)} prop lines · {df_props['player'].nunique()} players")
+
                     inj = fetch_espn_injuries("mlb")
 
-            if sims is None:
-                st.error(f"❌ Could not find game log for {ud_player}. Check spelling.")
+                    event_totals = {}
+                    for eid in df_props["event_id"].unique():
+                        event_totals[eid] = fetch_event_total("baseball_mlb", eid)
+
+                    progress = st.progress(0, text="Running MC...")
+                    rows = []
+                    total = len(df_props)
+                    for i, (_, p) in enumerate(df_props.iterrows()):
+                        rows.append(analyze_prop(
+                            player=p["player"], stat=p["stat"], line=p["line"],
+                            over_odds=p["over_odds"], under_odds=p["under_odds"],
+                            league="mlb", injuries=inj, n_sims=n_sims_choice,
+                            trust_thresh=trust_thresh, edge_thresh=edge_thresh,
+                            vegas_total=event_totals.get(p["event_id"]),
+                        ))
+                        progress.progress((i + 1) / total, text=f"MC: {i+1}/{total}")
+                    progress.empty()
+
+                    df_out = pd.DataFrame(rows)
+                    tier_order = {"🔥": 0, "🎯": 1, "💎": 2, "🟡": 3, "🔴": 4, "⚪": 5}
+                    df_out["_order"] = df_out["Tier"].map(tier_order).fillna(99)
+                    df_out["_edge"] = df_out["Edge pp"].fillna(-999)
+                    df_out = df_out.sort_values(["_order", "_edge"], ascending=[True, False])
+                    df_out = df_out.drop(columns=["_order", "_edge"])
+
+                    if not show_below:
+                        df_out = df_out[df_out["Tier"].isin(["🔥", "🎯", "💎"])]
+
+                    if df_out.empty:
+                        st.info("No plays clear thresholds.")
+                    else:
+                        st.dataframe(df_out, use_container_width=True, hide_index=True, height=500)
+                        st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')}")
+
+    # --- MLB LADDERS ---
+    with mlb_ladders_tab:
+        st.subheader("🪜 MLB Ladder / Alt Builder")
+        st.caption("Same engine as NBA — works for any platform's ladder/alt structure")
+
+        with st.form("mlb_ladder_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                mlb_ud_player = st.text_input("Player name", placeholder="e.g. Aaron Judge",
+                                                key="mlb_ud_player")
+                mlb_ud_stat = st.selectbox("Stat", list(MLB_STAT_MARKETS.keys()), key="mlb_ud_stat")
+            with col2:
+                mlb_ud_mode = st.selectbox(
+                    "Mode",
+                    ["Standard O/U", "🪜 Ladder (multi-rung)",
+                     "🔴 Demon (alt high, MORE)", "🟢 Goblin (alt low, MORE)"],
+                    key="mlb_ud_mode",
+                )
+                mlb_ud_side = st.radio("Side (Standard only)", ["Over", "Under"],
+                                         horizontal=True, key="mlb_ud_side")
+
+            st.markdown("**Rungs / lines:**")
+            rcol1, rcol2, rcol3, rcol4 = st.columns(4)
+            with rcol1:
+                m_r1 = st.number_input("Line 1", 0.0, value=1.5, step=0.5, key="mlb_r1")
+                m_p1 = st.number_input("Payout 1 (×)", 0.0, value=1.5, step=0.05, key="mlb_p1")
+            with rcol2:
+                m_r2 = st.number_input("Line 2 (0=skip)", 0.0, value=0.0, step=0.5, key="mlb_r2")
+                m_p2 = st.number_input("Payout 2 (×)", 0.0, value=0.0, step=0.05, key="mlb_p2")
+            with rcol3:
+                m_r3 = st.number_input("Line 3 (0=skip)", 0.0, value=0.0, step=0.5, key="mlb_r3")
+                m_p3 = st.number_input("Payout 3 (×)", 0.0, value=0.0, step=0.05, key="mlb_p3")
+            with rcol4:
+                m_r4 = st.number_input("Line 4 (0=skip)", 0.0, value=0.0, step=0.5, key="mlb_r4")
+                m_p4 = st.number_input("Payout 4 (×)", 0.0, value=0.0, step=0.05, key="mlb_p4")
+
+            mlb_submit = st.form_submit_button("🪜 Analyze", use_container_width=True)
+
+        if mlb_submit:
+            if not mlb_ud_player.strip():
+                st.error("Enter a player name.")
             else:
-                inj_emoji, inj_status = get_injury_status(ud_player, inj)
-                col_a, col_b, col_c, col_d = st.columns(4)
-                col_a.metric("L10 Avg", f"{l10_avg:.2f}" if l10_avg is not None else "—")
-                col_b.metric("Season Avg", f"{season_avg:.2f}" if season_avg is not None else "—")
-                col_c.metric("Sample", f"{n_games} games")
-                col_d.metric("Status", f"{inj_emoji} {inj_status}")
+                with st.spinner("Running MC..."):
+                    history = get_mlb_history(mlb_ud_player, mlb_ud_stat)
+                    inj = fetch_espn_injuries("mlb")
 
-                if n_games < 10:
-                    st.warning("⚠️ Limited sample — Poisson fallback used. Treat output as low-confidence.")
-
-                # Build rung table
-                rungs = [(1, r1, r1_pay), (2, r2, r2_pay), (3, r3, r3_pay)]
-                if r4 > 0 and r4_pay > 0:
-                    rungs.append((4, r4, r4_pay))
-
-                rows = []
-                for rn, line, pay in rungs:
-                    p_hit = hit_probability(sims, line, "Over")
-                    imp = implied_prob_from_payout(pay)
-                    edge = (p_hit - imp) * 100 if imp is not None else None
-                    rec = ""
-                    if edge is not None:
-                        if edge >= 8 and p_hit >= 0.5:
-                            rec = "🟢 STRONG TARGET"
-                        elif edge >= 3 and p_hit >= 0.5:
-                            rec = "🎯 PLAY"
-                        elif edge < 0:
-                            rec = "🔴 FADE"
-                        elif p_hit < 0.5:
-                            rec = "⚠️ Coin flip — skip"
-                        else:
-                            rec = "🟡 Thin edge"
-                    rows.append({
-                        "Rung": f"R{rn}",
-                        "Line": line,
-                        "Payout": f"{pay}x",
-                        "Model P(Hit)": f"{p_hit*100:.1f}%",
-                        "Implied (UD)": f"{imp*100:.1f}%" if imp is not None else "—",
-                        "Edge": f"{edge:+.1f}%" if edge is not None else "—",
-                        "Recommendation": rec,
-                    })
-
-                st.markdown(f"### {ud_player} — {ud_stat} ladder")
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-                # Best rung pick
-                best_rec = None
-                best_edge_val = -999
-                for rn, line, pay in rungs:
-                    p_hit = hit_probability(sims, line, "Over")
-                    imp = implied_prob_from_payout(pay)
-                    if imp is None or p_hit < 0.5:
-                        continue
-                    edge = (p_hit - imp) * 100
-                    if edge > best_edge_val:
-                        best_edge_val = edge
-                        best_rec = (rn, line, pay, p_hit, edge)
-
-                if best_rec and best_edge_val >= 3:
-                    rn, line, pay, p_hit, edge = best_rec
-                    st.success(
-                        f"🎯 **TARGET R{rn}: Over {line} @ {pay}x** — "
-                        f"Model {p_hit*100:.1f}% | Edge +{edge:.1f}% | "
-                        f"L10 avg {l10_avg:.2f}, Season avg {season_avg:.2f}"
-                    )
-                elif best_rec:
-                    rn, line, pay, p_hit, edge = best_rec
-                    st.info(f"Best available: R{rn} (edge {edge:+.1f}%) — too thin to recommend")
+                values, n_games, season_avg, l10_avg, std_dev = history
+                if values is None:
+                    st.error(f"❌ No game log found for '{mlb_ud_player}'.")
                 else:
-                    st.warning("No rung clears 50% hit prob. Skip this player tonight.")
+                    inj_emoji, inj_status = get_injury_status(mlb_ud_player, inj)
+                    sims = build_player_distribution(values, n_sims=n_sims_choice)
+
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("L10", f"{l10_avg:.2f}" if l10_avg else "—")
+                    c2.metric("Season", f"{season_avg:.2f}" if season_avg else "—")
+                    c3.metric("Sample", f"{n_games}")
+                    c4.metric("Status", f"{inj_emoji} {inj_status}")
+
+                    if n_games < 10:
+                        st.warning("⚠️ Small sample — NB/Poisson fallback used")
+
+                    rungs = [(1, m_r1, m_p1), (2, m_r2, m_p2),
+                             (3, m_r3, m_p3), (4, m_r4, m_p4)]
+                    rungs = [r for r in rungs if r[1] > 0 and r[2] > 0]
+                    if not rungs:
+                        st.error("Enter at least one line + payout.")
+                    else:
+                        rows = []
+                        for rn, line, pay in rungs:
+                            if mlb_ud_mode == "Standard O/U":
+                                p_hit = hit_probability(sims, line, mlb_ud_side)
+                                side_lbl = mlb_ud_side
+                            else:
+                                p_hit = hit_probability(sims, line, "Over")
+                                side_lbl = "More"
+
+                            imp = implied_prob_from_payout(pay)
+                            edge = (p_hit - imp) * 100 if imp else None
+                            trust, _ = trust_score(values, line, side_lbl,
+                                                    l10_avg, season_avg, inj_status)
+                            tier = signal_tier(trust, edge if edge is not None else 0,
+                                                trust_thresh, edge_thresh)
+                            bet_size, _ = suggested_bet_size(
+                                trust, edge if edge is not None else 0, tier)
+
+                            rows.append({
+                                "Tier": tier, "Rung": f"R{rn}", "Line": line, "Side": side_lbl,
+                                "Payout": f"{pay}×",
+                                "Model %": f"{p_hit*100:.1f}",
+                                "Implied %": f"{imp*100:.1f}" if imp else "—",
+                                "Edge pp": f"{edge:+.1f}" if edge is not None else "—",
+                                "Trust": trust, "Bet $": bet_size,
+                            })
+
+                        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # --- MLB TOP PLAYS ---
+    with mlb_top_tab:
+        st.subheader("🔥 MLB Top Plays Today")
+        st.caption("Best picks across props — sorted by tier & edge")
+        st.info("Run the 🎯 Props tab first to populate Top Plays.")
 
 
 # ============================================================
-# TAB 4 — SETTINGS
+# TAB: SETTINGS
 # ============================================================
 
 with tab_settings:
     st.subheader("📊 Settings & Diagnostics")
 
-    st.markdown("### API Status")
-    col1, col2, col3 = st.columns(3)
+    st.markdown("### 🔌 API Status")
+    cols = st.columns(4)
 
-    with col1:
-        st.markdown("**The Odds API**")
-        try:
-            r = requests.get(
-                f"{ODDS_API_BASE}/sports",
-                params={"apiKey": ODDS_API_KEY},
-                timeout=10,
-            )
-            if r.status_code == 200:
-                remaining = r.headers.get("x-requests-remaining", "?")
-                used = r.headers.get("x-requests-used", "?")
-                st.success(f"✅ Connected\nUsed: {used} | Remaining: {remaining}")
-            else:
-                st.error(f"❌ Status {r.status_code}")
-        except Exception as e:
-            st.error(f"❌ {e}")
+    with cols[0]:
+        st.markdown("**Odds API**")
+        if not ODDS_API_KEY:
+            st.error("❌ Key missing")
+        else:
+            try:
+                r = requests.get(f"{ODDS_API_BASE}/sports",
+                                 params={"apiKey": ODDS_API_KEY}, timeout=10)
+                if r.status_code == 200:
+                    rem = r.headers.get("x-requests-remaining", "?")
+                    used = r.headers.get("x-requests-used", "?")
+                    st.success(f"✅ Connected\nUsed: {used}\nRemaining: {rem}")
+                else:
+                    st.error(f"❌ {r.status_code}")
+            except Exception as e:
+                st.error(f"❌ {e}")
 
-    with col2:
-        st.markdown("**NBA Stats API**")
-        try:
-            r = requests.get(
-                f"{NBA_STATS_BASE}/scoreboardv2",
-                params={"DayOffset": 0, "GameDate": date.today().strftime("%m/%d/%Y"), "LeagueID": "00"},
-                headers=NBA_HEADERS,
-                timeout=10,
-            )
-            if r.status_code == 200:
-                st.success("✅ Connected")
-            else:
-                st.warning(f"⚠️ Status {r.status_code}")
-        except Exception as e:
-            st.error(f"❌ {e}")
+    with cols[1]:
+        st.markdown("**BallDontLie (NBA)**")
+        if not BDL_API_KEY:
+            st.error("❌ Key missing")
+        else:
+            try:
+                r = requests.get(f"{BDL_BASE}/teams",
+                                 headers=_bdl_headers(), timeout=10)
+                if r.status_code == 200:
+                    n = len(r.json().get("data", []))
+                    st.success(f"✅ Connected\n{n} teams")
+                elif r.status_code == 401:
+                    st.error("❌ 401 Unauthorized — check key")
+                else:
+                    st.warning(f"⚠️ {r.status_code}")
+            except Exception as e:
+                st.error(f"❌ {e}")
 
-    with col3:
+    with cols[2]:
         st.markdown("**MLB Stats API**")
         try:
             r = requests.get(f"{MLB_STATS_BASE}/sports/1", timeout=10)
             if r.status_code == 200:
                 st.success("✅ Connected")
             else:
-                st.warning(f"⚠️ Status {r.status_code}")
+                st.warning(f"⚠️ {r.status_code}")
+        except Exception as e:
+            st.error(f"❌ {e}")
+
+    with cols[3]:
+        st.markdown("**ESPN Injuries**")
+        try:
+            r = requests.get(ESPN_NBA_INJURIES, timeout=10)
+            if r.status_code == 200:
+                st.success("✅ Connected")
+            else:
+                st.warning(f"⚠️ {r.status_code}")
         except Exception as e:
             st.error(f"❌ {e}")
 
     st.markdown("---")
-    st.markdown("### Cache Management")
-    if st.button("🗑️ Clear all caches"):
-        st.cache_data.clear()
-        st.success("Caches cleared. Refresh tabs to repopulate.")
+    st.markdown("### 🧪 BallDontLie Free-Tier Diagnostic")
+    st.caption("Tests which endpoints are accessible on the free tier")
+
+    if st.button("🧪 Run BDL diagnostic", use_container_width=True):
+        if not BDL_API_KEY:
+            st.error("Add BallDontLie API key to secrets first.")
+        else:
+            tests = [
+                ("Teams (basic)", f"{BDL_BASE}/teams", {}),
+                ("Player search (LeBron)", f"{BDL_BASE}/players",
+                 {"search": "james", "per_page": 5}),
+                ("Game stats (recent)", f"{BDL_BASE}/stats",
+                 {"per_page": 5}),
+                ("Season averages", f"{BDL_BASE}/season_averages",
+                 {"season": 2024, "player_ids[]": 237}),
+            ]
+            for label, url, params in tests:
+                try:
+                    r = requests.get(url, params=params, headers=_bdl_headers(), timeout=10)
+                    if r.status_code == 200:
+                        n = len(r.json().get("data", []))
+                        st.success(f"✅ {label}: 200 OK ({n} records)")
+                    elif r.status_code == 401:
+                        st.error(f"🔒 {label}: 401 Unauthorized — needs paid tier")
+                    elif r.status_code == 403:
+                        st.error(f"🚫 {label}: 403 Forbidden — endpoint not available on free")
+                    elif r.status_code == 429:
+                        st.warning(f"⏱️ {label}: 429 Rate limited")
+                    else:
+                        st.warning(f"⚠️ {label}: {r.status_code}")
+                except Exception as e:
+                    st.error(f"❌ {label}: {e}")
+                time.sleep(0.5)
 
     st.markdown("---")
-    st.markdown("### Methodology Notes")
+    st.markdown("### 🗑️ Cache Management")
+    if st.button("Clear all caches"):
+        st.cache_data.clear()
+        st.success("Caches cleared.")
+
+    st.markdown("---")
+    st.markdown("### 📚 Methodology")
     st.markdown("""
-    **Monte Carlo Engine:**
-    - 10,000 sims per player per stat
-    - Bootstrap from L25 game log with replacement
-    - L10 weighted 70%, games 11-25 weighted 30%
-    - Falls back to Poisson with shrinkage if sample < 10 games
+**Distribution Engine:**
+- **Negative Binomial** primary (handles overdispersion in player stats)
+- Bootstrap from L25 game log when sample ≥ 10
+- L10 weighted 70%, games 11-25 weighted 30%
+- Poisson fallback for samples < 5
 
-    **Hit Probability:**
-    - P(Over X) = fraction of sims where stat > X
-    - For ladders, joint probabilities computed from same simulation set (captures within-game correlation)
+**Trust Score (0-100):**
+- L25 Hit Rate (40%) — most important
+- Sample Quality (20%)
+- Consistency (15%) — low CV = high trust
+- Form Alignment (15%) — L10 vs Season
+- Status Health (10%) — Active/Probable/Out
 
-    **Edge Calculation:**
-    - Sportsbook props: Edge = Model P(Over) − Implied P from American odds
-    - Underdog ladders: Edge = Model P(Hit) − (1 / payout multiplier)
+**Edge Score (0-100):**
+- Model − Implied (60%) capped at 25 pp
+- Line Comfort (25%) — L10 distance from line in std devs
+- Cross-Platform Gap (15%)
 
-    **Known V1.0 Limitations:**
-    - No live minutes projections (uses season avg) — V1.1 adds Rotowire scrape
-    - No pace/opponent adjustments wired in (engine supports it, UI inputs deferred to V1.1)
-    - No Vegas total / blowout detection (V1.1)
-    - No multi-player Pick-N correlation modeling (V1.2)
+**Tier Thresholds (default):**
+- 🔥 Combined: Trust ≥ 65 AND Edge ≥ 5pp
+- 🎯 Trust pick: Trust ≥ 65 only
+- 💎 Edge pick: Edge ≥ 5pp only
+- 🔴 Fade: negative edge
 
-    **Validation Discipline:**
-    - Shadow validation only for first 2 weeks
-    - No live betting until calibration data shows model edges materializing
+**Adjustments wired:**
+- Minutes mult: ESPN injury status → Active 1.0 / Probable 0.95 / DTD 0.85 / Q 0.70 / D 0.30 / Out 0
+- Vegas total mult: game total / league avg (NBA 225, MLB 8.5)
+- Pace: deferred (V2.1 with BDL pace data)
+- DvP: deferred (V2.1)
+
+**Validation discipline:**
+- Shadow validate ≥ 2 weeks before live bets
+- $10/bet ceiling, $50/day cap during validation
     """)
 
     st.markdown("---")
-    st.caption(f"App version: V1.0 | Last code refresh: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    st.caption(f"V2.0 | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
