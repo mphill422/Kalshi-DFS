@@ -589,7 +589,16 @@ def bdl_player_game_log(player_id: int, season: int = None, n_seasons: int = 1):
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"]).sort_values("date", ascending=False).reset_index(drop=True)
-    return df
+    # Tag DNP rows for transparency, then filter
+    df["played"] = df["min"] > 0
+    # Keep DNP info for sample-quality flag, but filter for distribution building
+    df_played = df[df["played"]].reset_index(drop=True)
+    # Attach DNP metadata
+    if not df_played.empty:
+        df_played.attrs["total_games"] = len(df)
+        df_played.attrs["dnp_count"] = int((~df["played"]).sum())
+        df_played.attrs["played_count"] = int(df["played"].sum())
+    return df_played
 
 
 def _parse_minutes(min_str) -> float:
@@ -735,13 +744,25 @@ def get_injury_status(player_name: str, inj_dict: dict) -> tuple:
 # ============================================================
 
 def get_nba_history(player: str, stat: str):
-    """Returns (values_array, n_games, season_avg, l10_avg, std_dev) or all None."""
+    """Returns (values_array, n_games, season_avg, l10_avg, std_dev, dnp_meta) or Nones.
+    dnp_meta = (total_games_in_window, dnp_count, played_count) or None"""
     pid = bdl_search_player(player)
     if pid is None:
-        return None, 0, None, None, None
+        return None, 0, None, None, None, None
     log = bdl_player_game_log(pid)
     if log.empty:
-        return None, 0, None, None, None
+        return None, 0, None, None, None, None
+
+    # Pull DNP metadata if present
+    dnp_meta = None
+    try:
+        total = log.attrs.get("total_games")
+        dnp = log.attrs.get("dnp_count")
+        played = log.attrs.get("played_count")
+        if total is not None:
+            dnp_meta = (total, dnp, played)
+    except Exception:
+        dnp_meta = None
 
     # Map stat label to value
     if stat in ("Pts+Reb+Ast",):
@@ -755,27 +776,27 @@ def get_nba_history(player: str, stat: str):
     else:
         col = BDL_STAT_FIELDS.get(stat)
         if col is None or col not in log.columns:
-            return None, 0, None, None, None
+            return None, 0, None, None, None, dnp_meta
         values = log[col].astype(float).values
 
     n = len(values)
     if n == 0:
-        return None, 0, None, None, None
+        return None, 0, None, None, None, dnp_meta
     season_avg = float(np.mean(values))
     l10_avg = float(np.mean(values[:min(10, n)]))
     std_dev = float(np.std(values, ddof=1)) if n > 1 else 0.0
-    return values, n, season_avg, l10_avg, std_dev
+    return values, n, season_avg, l10_avg, std_dev, dnp_meta
 
 
 def get_mlb_history(player: str, stat: str):
     pid = mlb_player_id(player)
     if pid is None:
-        return None, 0, None, None, None
+        return None, 0, None, None, None, None
     pitcher_stats = {"Strikeouts", "Earned Runs", "Outs Recorded", "Hits Allowed", "Walks Issued"}
     group = "pitching" if stat in pitcher_stats else "hitting"
     log = mlb_game_log(pid, group)
     if log.empty:
-        return None, 0, None, None, None
+        return None, 0, None, None, None, None
     field_map = {
         "Hits": "hits", "Total Bases": "totalBases", "RBI": "rbi", "Runs": "runs",
         "Home Runs": "homeRuns", "Strikeouts": "strikeouts",
@@ -784,15 +805,15 @@ def get_mlb_history(player: str, stat: str):
     }
     col = field_map.get(stat)
     if col is None or col not in log.columns:
-        return None, 0, None, None, None
+        return None, 0, None, None, None, None
     values = log[col].astype(float).values
     n = len(values)
     if n == 0:
-        return None, 0, None, None, None
+        return None, 0, None, None, None, None
     season_avg = float(np.mean(values))
     l10_avg = float(np.mean(values[:min(10, n)]))
     std_dev = float(np.std(values, ddof=1)) if n > 1 else 0.0
-    return values, n, season_avg, l10_avg, std_dev
+    return values, n, season_avg, l10_avg, std_dev, None
 
 
 # ============================================================
@@ -803,7 +824,9 @@ def analyze_prop(player: str, stat: str, line: float,
                  over_odds: float, under_odds: float,
                  league: str, injuries: dict, n_sims: int,
                  trust_thresh: float, edge_thresh: float,
-                 vegas_total: float = None) -> dict:
+                 vegas_total: float = None,
+                 home_team: str = "", away_team: str = "",
+                 commence_time: str = "") -> dict:
     """Build a fully-scored analysis row."""
     if league == "nba":
         history = get_nba_history(player, stat)
@@ -812,12 +835,16 @@ def analyze_prop(player: str, stat: str, line: float,
         history = get_mlb_history(player, stat)
         league_avg_total = 8.5
 
-    values, n_games, season_avg, l10_avg, std_dev = history
+    values, n_games, season_avg, l10_avg, std_dev, dnp_meta = history
     inj_emoji, inj_status = get_injury_status(player, injuries)
+
+    # Build game label like "MIN @ OKC · Tonight 9:30p"
+    game_label = _format_game_label(home_team, away_team, commence_time)
 
     if values is None or n_games == 0:
         return {
-            "Tier": "⚪", "Player": player, "Status": f"{inj_emoji} {inj_status}",
+            "Tier": "⚪", "Player": player, "Game": game_label,
+            "Status": f"{inj_emoji} {inj_status}",
             "Stat": stat, "Line": line,
             "L10": None, "Season": None, "n": 0,
             "Trust": None, "Edge": None,
@@ -864,12 +891,20 @@ def analyze_prop(player: str, stat: str, line: float,
                        trust_thresh, edge_thresh)
     bet_size, _reason = suggested_bet_size(trust, edge_pp if edge_pp is not None else 0, tier)
 
-    note = ""
+    # Build note with DNP awareness
+    notes = []
     if n_games < 10:
-        note = "⚠️ Small sample"
+        notes.append("⚠️ Small sample")
+    if dnp_meta is not None:
+        total, dnp, played = dnp_meta
+        # Flag if >30% of recent games were DNPs
+        if total > 0 and (dnp / total) > 0.30:
+            notes.append(f"⚠️ {dnp}/{total} DNPs (avg may be misleading)")
+    note = " · ".join(notes) if notes else ""
 
     return {
-        "Tier": tier, "Player": player, "Status": f"{inj_emoji} {inj_status}",
+        "Tier": tier, "Player": player, "Game": game_label,
+        "Status": f"{inj_emoji} {inj_status}",
         "Stat": stat, "Line": line, "Side": best_side,
         "L10": round(l10_avg, 2) if l10_avg else None,
         "Season": round(season_avg, 2) if season_avg else None,
@@ -883,6 +918,62 @@ def analyze_prop(player: str, stat: str, line: float,
         "Bet $": bet_size,
         "Note": note,
     }
+
+
+def _format_game_label(home: str, away: str, commence_iso: str) -> str:
+    """Format a short game label like 'MIN @ OKC · Tonight 9:30p'."""
+    if not home or not away:
+        return ""
+    # Build team abbreviations (last word of city + team) — fallback to first 3 letters
+    away_abbr = _team_abbr(away)
+    home_abbr = _team_abbr(home)
+    matchup = f"{away_abbr} @ {home_abbr}"
+
+    if not commence_iso:
+        return matchup
+
+    try:
+        dt = datetime.fromisoformat(commence_iso.replace("Z", "+00:00"))
+        # Convert to local-ish time (use UTC offset -4 as ET approximation; user is in FL)
+        dt_local = dt - timedelta(hours=4)
+        today = datetime.utcnow().date() - timedelta(hours=4)  # rough
+        today = (datetime.utcnow() - timedelta(hours=4)).date()
+        if dt_local.date() == today:
+            day_label = "Tonight"
+        elif dt_local.date() == today + timedelta(days=1):
+            day_label = "Tmrw"
+        else:
+            day_label = dt_local.strftime("%a")
+        time_str = dt_local.strftime("%-I:%M%p").lower().replace(":00", "")
+        return f"{matchup} · {day_label} {time_str}"
+    except Exception:
+        return matchup
+
+
+def _team_abbr(team_name: str) -> str:
+    """Crude team abbreviation — last word, first 3 letters uppercased."""
+    if not team_name:
+        return ""
+    # Common NBA abbreviations
+    nba_abbrs = {
+        "Atlanta Hawks": "ATL", "Boston Celtics": "BOS", "Brooklyn Nets": "BKN",
+        "Charlotte Hornets": "CHA", "Chicago Bulls": "CHI", "Cleveland Cavaliers": "CLE",
+        "Dallas Mavericks": "DAL", "Denver Nuggets": "DEN", "Detroit Pistons": "DET",
+        "Golden State Warriors": "GSW", "Houston Rockets": "HOU", "Indiana Pacers": "IND",
+        "LA Clippers": "LAC", "Los Angeles Clippers": "LAC", "Los Angeles Lakers": "LAL",
+        "Memphis Grizzlies": "MEM", "Miami Heat": "MIA", "Milwaukee Bucks": "MIL",
+        "Minnesota Timberwolves": "MIN", "New Orleans Pelicans": "NOP",
+        "New York Knicks": "NYK", "Oklahoma City Thunder": "OKC",
+        "Orlando Magic": "ORL", "Philadelphia 76ers": "PHI", "Phoenix Suns": "PHX",
+        "Portland Trail Blazers": "POR", "Sacramento Kings": "SAC",
+        "San Antonio Spurs": "SAS", "Toronto Raptors": "TOR", "Utah Jazz": "UTA",
+        "Washington Wizards": "WAS",
+    }
+    if team_name in nba_abbrs:
+        return nba_abbrs[team_name]
+    # Fallback: first 3 letters of last word
+    parts = team_name.split()
+    return parts[-1][:3].upper() if parts else ""
 
 
 # ============================================================
@@ -1002,6 +1093,8 @@ with tab_nba:
                             league="nba", injuries=inj, n_sims=n_sims_choice,
                             trust_thresh=trust_thresh, edge_thresh=edge_thresh,
                             vegas_total=event_totals.get(p["event_id"]),
+                            home_team=p.get("home", ""), away_team=p.get("away", ""),
+                            commence_time=p.get("commence_time", ""),
                         ))
                         progress.progress((i + 1) / total, text=f"MC: {i+1}/{total}")
                     progress.empty()
@@ -1069,7 +1162,7 @@ with tab_nba:
                     history = get_nba_history(ud_player, ud_stat)
                     inj = fetch_espn_injuries("nba")
 
-                values, n_games, season_avg, l10_avg, std_dev = history
+                values, n_games, season_avg, l10_avg, std_dev, dnp_meta = history
                 if values is None:
                     st.error(f"❌ No game log found for '{ud_player}'. Check spelling.")
                 else:
@@ -1077,6 +1170,12 @@ with tab_nba:
                     minutes_mult = STATUS_MULTIPLIER.get(inj_status.split()[0] if inj_status else "Active", 1.0)
                     sims = build_player_distribution(values, n_sims=n_sims_choice)
                     sims = apply_adjustments(sims, minutes_mult=minutes_mult)
+
+                    # DNP warning if applicable
+                    if dnp_meta is not None:
+                        total_g, dnp_g, played_g = dnp_meta
+                        if total_g > 0 and (dnp_g / total_g) > 0.30:
+                            st.warning(f"⚠️ {dnp_g}/{total_g} of recent games were DNPs — projection may be unreliable")
 
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("L10", f"{l10_avg:.2f}" if l10_avg else "—")
@@ -1236,6 +1335,8 @@ with tab_mlb:
                             league="mlb", injuries=inj, n_sims=n_sims_choice,
                             trust_thresh=trust_thresh, edge_thresh=edge_thresh,
                             vegas_total=event_totals.get(p["event_id"]),
+                            home_team=p.get("home", ""), away_team=p.get("away", ""),
+                            commence_time=p.get("commence_time", ""),
                         ))
                         progress.progress((i + 1) / total, text=f"MC: {i+1}/{total}")
                     progress.empty()
@@ -1302,7 +1403,7 @@ with tab_mlb:
                     history = get_mlb_history(mlb_ud_player, mlb_ud_stat)
                     inj = fetch_espn_injuries("mlb")
 
-                values, n_games, season_avg, l10_avg, std_dev = history
+                values, n_games, season_avg, l10_avg, std_dev, _ = history
                 if values is None:
                     st.error(f"❌ No game log found for '{mlb_ud_player}'.")
                 else:
