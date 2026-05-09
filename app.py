@@ -977,6 +977,153 @@ def _team_abbr(team_name: str) -> str:
 
 
 # ============================================================
+# UI — MOBILE CARD RENDERER
+# ============================================================
+
+def _tier_color(tier: str) -> str:
+    """Return a CSS background color for the tier accent stripe."""
+    return {
+        "🔥": "#ff6b35",    # orange-red
+        "🎯": "#22c55e",    # green
+        "💎": "#3b82f6",    # blue
+        "🟡": "#eab308",    # yellow
+        "🔴": "#ef4444",    # red
+        "⚪": "#6b7280",    # gray
+    }.get(tier, "#6b7280")
+
+
+def render_pick_card(row: dict, idx: int, key_prefix: str):
+    """
+    Render a single prop as a mobile-friendly card.
+    Uses st.container with custom CSS via markdown for styling.
+    """
+    tier = row.get("Tier", "⚪")
+    player = row.get("Player", "")
+    game = row.get("Game", "")
+    status = row.get("Status", "")
+    stat = row.get("Stat", "")
+    line = row.get("Line", "")
+    side = row.get("Side", "")
+    trust = row.get("Trust", None)
+    edge_pp = row.get("Edge pp", None)
+    bet_size = row.get("Bet $", 0)
+    l10 = row.get("L10", None)
+    season = row.get("Season", None)
+    n_games = row.get("n", 0)
+    model_o = row.get("Model O%", None)
+    imp_o = row.get("Imp O%", None)
+    note = row.get("Note", "") or ""
+
+    color = _tier_color(tier)
+
+    with st.container(border=True):
+        # Top row: tier emoji (big) + player name + bet size
+        c_tier, c_name, c_bet = st.columns([1, 4, 2])
+        with c_tier:
+            st.markdown(f"<div style='font-size:38px; line-height:1;'>{tier}</div>",
+                        unsafe_allow_html=True)
+        with c_name:
+            st.markdown(f"**{player}**")
+            if game:
+                st.caption(game)
+            if status:
+                st.caption(status)
+        with c_bet:
+            if bet_size > 0:
+                st.markdown(f"<div style='text-align:right; font-size:24px; font-weight:bold; color:{color};'>"
+                            f"${bet_size}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align:right; font-size:11px; color:#888;'>suggested</div>",
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div style='text-align:right; font-size:14px; color:#888;'>no bet</div>",
+                            unsafe_allow_html=True)
+
+        # Middle row: stat / line / side — big and clear
+        st.markdown(
+            f"<div style='font-size:18px; padding:8px 0; border-top:1px solid #333; margin-top:4px;'>"
+            f"<b>{stat}</b> &nbsp;·&nbsp; {side} <b>{line}</b></div>",
+            unsafe_allow_html=True
+        )
+
+        # Score chips: Trust + Edge
+        c_trust, c_edge = st.columns(2)
+        with c_trust:
+            trust_str = f"{trust}" if trust is not None else "—"
+            st.markdown(
+                f"<div style='background:#1f2937; padding:6px 10px; border-radius:6px; text-align:center;'>"
+                f"<span style='color:#888; font-size:11px;'>TRUST</span><br>"
+                f"<span style='font-size:18px; font-weight:bold;'>{trust_str}</span></div>",
+                unsafe_allow_html=True
+            )
+        with c_edge:
+            edge_str = f"{edge_pp:+.1f}pp" if edge_pp is not None else "—"
+            edge_color = "#22c55e" if (edge_pp is not None and edge_pp >= 5) else (
+                "#ef4444" if (edge_pp is not None and edge_pp < 0) else "#eab308")
+            st.markdown(
+                f"<div style='background:#1f2937; padding:6px 10px; border-radius:6px; text-align:center;'>"
+                f"<span style='color:#888; font-size:11px;'>EDGE</span><br>"
+                f"<span style='font-size:18px; font-weight:bold; color:{edge_color};'>{edge_str}</span></div>",
+                unsafe_allow_html=True
+            )
+
+        # Quick context
+        if l10 is not None:
+            ctx_bits = [f"L10: {l10}"]
+            if season is not None:
+                ctx_bits.append(f"Season: {season}")
+            if n_games:
+                ctx_bits.append(f"n={n_games}")
+            st.caption(" · ".join(ctx_bits))
+
+        # DNP / small-sample note
+        if note:
+            st.warning(note, icon="⚠️")
+
+        # Tap-to-expand details
+        with st.expander("▼ Details"):
+            d1, d2 = st.columns(2)
+            with d1:
+                st.metric("Model %", f"{model_o}%" if model_o is not None else "—")
+                st.metric("L10 avg", f"{l10}" if l10 is not None else "—")
+            with d2:
+                st.metric("Implied %", f"{imp_o}%" if imp_o is not None else "—")
+                st.metric("Season avg", f"{season}" if season is not None else "—")
+            st.caption(f"Sample: {n_games} games · Status: {status}")
+
+
+def render_cards_view(df: pd.DataFrame, key_prefix: str = "card"):
+    """
+    Render a list of cards filtered to best picks by default,
+    with a 'Show all' toggle to reveal lower-tier picks.
+    """
+    if df.empty:
+        st.info("No plays clear current thresholds.")
+        return
+
+    # Default filter: best tiers only
+    best_tiers = ["🔥", "🎯", "💎"]
+    best_df = df[df["Tier"].isin(best_tiers)].copy()
+    rest_df = df[~df["Tier"].isin(best_tiers)].copy()
+
+    # Show counts
+    n_best = len(best_df)
+    n_rest = len(rest_df)
+
+    if n_best == 0:
+        st.info(f"No 🔥 / 🎯 / 💎 picks tonight. {n_rest} lower-tier rows available below.")
+    else:
+        st.markdown(f"### Best picks ({n_best})")
+        for i, (_, row) in enumerate(best_df.iterrows()):
+            render_pick_card(row.to_dict(), i, f"{key_prefix}_best")
+
+    # Show-all expander for the rest
+    if n_rest > 0:
+        with st.expander(f"Show all {n_rest} other picks (🟡 thin / 🔴 fade / ⚪ no data)"):
+            for i, (_, row) in enumerate(rest_df.iterrows()):
+                render_pick_card(row.to_dict(), i, f"{key_prefix}_rest")
+
+
+# ============================================================
 # UI — HEADER & SIDEBAR
 # ============================================================
 
@@ -1015,6 +1162,14 @@ with st.sidebar:
 - 🔴 Fade
 - ⚪ No data
     """)
+
+    st.markdown("---")
+    st.markdown("### 📱 Display")
+    mobile_mode = st.checkbox("📱 Mobile mode (card layout)", value=False,
+                                help="Phone-optimized card view. Toggle ON when on phone, OFF on Mac.")
+    compact_view = st.checkbox("Compact view (Mac table)", value=True,
+                                disabled=mobile_mode,
+                                help="Mac-only: hides redundant columns. Disabled when Mobile mode is on.")
 
     st.markdown("---")
     st.markdown("### 💰 Sizing tiers")
@@ -1113,9 +1268,23 @@ with tab_nba:
 
                     if df_out.empty:
                         st.info("No plays clear current thresholds. Try toggling 'Show below threshold' or adjusting sliders.")
+                    elif mobile_mode:
+                        # Card layout for phone
+                        render_cards_view(df_out, key_prefix="nba_props")
+                        st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')} · "
+                                   f"Mobile cards · {len(df_out)} total plays")
                     else:
-                        st.dataframe(df_out, use_container_width=True, hide_index=True, height=500)
-                        st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')}")
+                        # Table layout for Mac
+                        if compact_view:
+                            compact_cols = ["Tier", "Player", "Game", "Stat", "Line", "Side",
+                                            "L10", "Trust", "Edge pp", "Bet $", "Note"]
+                            display_df = df_out[[c for c in compact_cols if c in df_out.columns]]
+                        else:
+                            display_df = df_out
+                        st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
+                        st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')} · "
+                                   f"{'Compact view' if compact_view else 'Full detail'} "
+                                   f"· {len(display_df)} rows")
 
     # --- NBA LADDERS ---
     with nba_ladders_tab:
@@ -1353,9 +1522,23 @@ with tab_mlb:
 
                     if df_out.empty:
                         st.info("No plays clear thresholds.")
+                    elif mobile_mode:
+                        # Card layout for phone
+                        render_cards_view(df_out, key_prefix="mlb_props")
+                        st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')} · "
+                                   f"Mobile cards · {len(df_out)} total plays")
                     else:
-                        st.dataframe(df_out, use_container_width=True, hide_index=True, height=500)
-                        st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')}")
+                        # Table layout for Mac
+                        if compact_view:
+                            compact_cols = ["Tier", "Player", "Game", "Stat", "Line", "Side",
+                                            "L10", "Trust", "Edge pp", "Bet $", "Note"]
+                            display_df = df_out[[c for c in compact_cols if c in df_out.columns]]
+                        else:
+                            display_df = df_out
+                        st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
+                        st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')} · "
+                                   f"{'Compact view' if compact_view else 'Full detail'} "
+                                   f"· {len(display_df)} rows")
 
     # --- MLB LADDERS ---
     with mlb_ladders_tab:
