@@ -977,6 +977,68 @@ def _team_abbr(team_name: str) -> str:
 
 
 # ============================================================
+# VALIDATION DATA FETCHERS (V2.1)
+# ============================================================
+
+def _supabase_get(table: str, params: dict = None):
+    """Generic Supabase REST GET."""
+    sb_url = _get_secret("supabase", "url", "")
+    sb_key = _get_secret("supabase", "key", "")
+    if not sb_url or not sb_key:
+        return None, "Supabase credentials missing in secrets"
+    headers = {"apikey": sb_key, "Authorization": f"Bearer {sb_key}"}
+    try:
+        r = requests.get(f"{sb_url}/rest/v1/{table}",
+                         headers=headers, params=params or {}, timeout=15)
+        if r.status_code == 200:
+            return r.json(), None
+        return None, f"{r.status_code}: {r.text[:200]}"
+    except Exception as e:
+        return None, str(e)
+
+
+@st.cache_data(ttl=300)
+def fetch_tier_performance():
+    data, err = _supabase_get("dfs_tier_performance",
+                               params={"select": "*", "order": "league,tier"})
+    if err or not data:
+        return pd.DataFrame(), err
+    return pd.DataFrame(data), None
+
+
+@st.cache_data(ttl=300)
+def fetch_stat_performance():
+    data, err = _supabase_get("dfs_stat_performance",
+                               params={"select": "*", "order": "league,hit_rate_pct.desc.nullslast"})
+    if err or not data:
+        return pd.DataFrame(), err
+    return pd.DataFrame(data), None
+
+
+@st.cache_data(ttl=300)
+def fetch_recent_picks(limit: int = 200):
+    data, err = _supabase_get(
+        "dfs_picks_with_outcomes",
+        params={"select": "*", "order": "snapshot_date.desc,tier",
+                "limit": limit},
+    )
+    if err or not data:
+        return pd.DataFrame(), err
+    return pd.DataFrame(data), None
+
+
+@st.cache_data(ttl=120)
+def fetch_run_log():
+    data, err = _supabase_get(
+        "dfs_run_log",
+        params={"select": "*", "order": "started_at.desc", "limit": 20},
+    )
+    if err or not data:
+        return pd.DataFrame(), err
+    return pd.DataFrame(data), None
+
+
+# ============================================================
 # UI — MOBILE CARD RENDERER
 # ============================================================
 
@@ -1184,7 +1246,8 @@ with st.sidebar:
 # UI — MAIN TABS (sport-first)
 # ============================================================
 
-tab_nba, tab_mlb, tab_settings = st.tabs(["🏀 NBA", "⚾ MLB", "📊 Settings"])
+tab_nba, tab_mlb, tab_validation, tab_settings = st.tabs([
+    "🏀 NBA", "⚾ MLB", "📈 Validation", "📊 Settings"])
 
 
 # ============================================================
@@ -1642,6 +1705,107 @@ with tab_mlb:
         st.subheader("🔥 MLB Top Plays Today")
         st.caption("Best picks across props — sorted by tier & edge")
         st.info("Run the 🎯 Props tab first to populate Top Plays.")
+
+
+# ============================================================
+# TAB: VALIDATION (V2.1)
+# ============================================================
+
+with tab_validation:
+    st.subheader("📈 Shadow Validation Dashboard")
+    st.caption("Auto-logged picks vs actual outcomes · 6 PM ET snapshot · 11 AM ET settlement")
+
+    # Automation status
+    st.markdown("### 🤖 Automation Status")
+    run_df, run_err = fetch_run_log()
+    if run_err:
+        st.error(f"Cannot reach Supabase: {run_err}")
+    elif run_df.empty:
+        st.warning("No automation runs yet. First snapshot fires nightly at 6 PM ET.")
+    else:
+        latest_snap = run_df[run_df["run_type"] == "snapshot"].head(1)
+        latest_settle = run_df[run_df["run_type"] == "settlement"].head(1)
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if not latest_snap.empty:
+                s = latest_snap.iloc[0]
+                emoji = "✅" if s["status"] == "success" else ("⚠️" if s["status"] == "partial" else "❌")
+                st.metric("Last Snapshot",
+                          f"{emoji} {s['status']}",
+                          f"{s.get('rows_written', 0)} picks logged")
+                st.caption(f"Ran: {str(s.get('started_at', ''))[:16]}")
+            else:
+                st.info("No snapshot runs yet")
+        with col_b:
+            if not latest_settle.empty:
+                s = latest_settle.iloc[0]
+                emoji = "✅" if s["status"] == "success" else ("⚠️" if s["status"] == "partial" else "❌")
+                st.metric("Last Settlement",
+                          f"{emoji} {s['status']}",
+                          f"{s.get('rows_written', 0)} picks settled")
+                st.caption(f"Ran: {str(s.get('started_at', ''))[:16]}")
+            else:
+                st.info("No settlement runs yet")
+
+    st.markdown("---")
+
+    # Tier performance
+    st.markdown("### 🎯 Tier Hit Rates")
+    st.caption("The validation truth — should be high for 🔥/🎯/💎 if model has edge.")
+    tier_df, err = fetch_tier_performance()
+    if err:
+        st.warning(f"No tier data yet: {err}")
+    elif tier_df.empty:
+        st.info("No settled picks yet. Wait 24h after first snapshot.")
+    else:
+        st.dataframe(tier_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # Stat performance
+    st.markdown("### 📊 Hit Rate by Stat")
+    stat_df, err = fetch_stat_performance()
+    if err:
+        st.warning(f"No stat data: {err}")
+    elif stat_df.empty:
+        st.info("No data yet.")
+    else:
+        st.dataframe(stat_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # Recent picks
+    st.markdown("### 📋 Recent Picks Log")
+    n_recent = st.slider("Picks to show", 25, 500, 100, key="recent_picks_n")
+    picks_df, err = fetch_recent_picks(limit=n_recent)
+    if err:
+        st.warning(f"No picks data: {err}")
+    elif picks_df.empty:
+        st.info("No picks logged yet. First snapshot fires at 6 PM ET.")
+    else:
+        outcome_filter = st.multiselect(
+            "Filter outcomes",
+            ["hit", "miss", "push", "void", "no_data"],
+            default=["hit", "miss"],
+        )
+        if outcome_filter:
+            filtered = picks_df[picks_df["outcome"].isin(outcome_filter) |
+                                picks_df["outcome"].isna()]
+        else:
+            filtered = picks_df
+        compact_cols = ["snapshot_date", "league", "tier", "player", "stat", "line",
+                        "side", "edge_pp", "outcome", "actual_value",
+                        "l10_avg", "model_prob_over", "model_prob_under"]
+        display = filtered[[c for c in compact_cols if c in filtered.columns]]
+        st.dataframe(display, use_container_width=True, hide_index=True, height=400)
+        st.caption(f"Showing {len(display)} picks")
+
+    st.markdown("---")
+    st.markdown("""
+**Methodology:** Daily 6 PM ET snapshot logs only 🔥/🎯/💎 picks.
+Daily 11 AM ET settlement marks hit/miss/push/void from box scores.
+Run SQL queries in Supabase after 7 days for systematic analysis.
+""")
 
 
 # ============================================================
