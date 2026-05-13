@@ -93,7 +93,18 @@ def insert_settlements(rows: list):
             if r.status_code in (200, 201, 204):
                 inserted += len(chunk)
             else:
-                print(f"⚠️  Insert failed: {r.status_code} {r.text[:200]}")
+                print(f"⚠️  Batch insert failed: {r.status_code} {r.text[:200]}")
+                print(f"   Falling back to per-row inserts for this chunk...")
+                # Per-row fallback so one bad row doesn't kill the batch
+                for single in chunk:
+                    try:
+                        r2 = requests.post(url, headers={**sb_headers(),
+                                                          "Prefer": "return=minimal"},
+                                           json=single, timeout=15)
+                        if r2.status_code in (200, 201, 204):
+                            inserted += 1
+                    except Exception:
+                        pass
         except Exception as e:
             print(f"⚠️  Insert exception: {e}")
     return inserted
@@ -203,6 +214,21 @@ def parse_minutes(m):
         return float(m)
     except Exception:
         return 0.0
+
+
+# Canonical schema for every settlement row.
+# All settlement dicts MUST have these exact keys before insert,
+# otherwise PostgREST rejects the batch with PGRST102.
+SETTLEMENT_KEYS = [
+    "pick_id", "game_date", "outcome", "actual_value",
+    "actual_minutes", "player_played", "game_status",
+    "raw_box_score", "notes",
+]
+
+
+def normalize_settlement(row: dict) -> dict:
+    """Ensure every settlement row has the same set of keys (fill missing with None)."""
+    return {k: row.get(k) for k in SETTLEMENT_KEYS}
 
 
 def settle_nba_pick(pick: dict, game_date: str) -> dict:
@@ -429,7 +455,9 @@ def main():
             errors.append(f"pick {pick['id']}: {e}")
 
     print(f"Settlements built: {len(settlements)}")
-    written = insert_settlements(settlements)
+    # Normalize every row so all dicts have the same keys (fixes PGRST102)
+    normalized = [normalize_settlement(s) for s in settlements]
+    written = insert_settlements(normalized)
     print(f"Written to Supabase: {written}")
 
     # Summary
