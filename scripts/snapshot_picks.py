@@ -1,15 +1,27 @@
 """
-DFS Shadow Validation — Nightly Snapshot Job
-=============================================
+DFS Shadow Validation — Nightly Snapshot Job (V2.2)
+====================================================
 Runs at 6 PM ET via GitHub Actions cron.
 
 Workflow:
 1. Pull today's NBA + MLB props from Odds API
 2. For each prop, fetch player history (BDL for NBA, MLB Stats for MLB)
 3. Run Negative Binomial Monte Carlo (matches Streamlit app methodology)
-4. Compute Trust + Edge + Tier scores
-5. Filter to 🔥 / 🎯 / 💎 tier picks only
-6. Write to dfs_shadow_picks Supabase table
+4. V2.2: Apply calibration to model probabilities (bucket-based lookup)
+5. Compute Trust + Edge + Tier scores using CALIBRATED probabilities
+6. V2.2: Apply stat allowlist filter to 💎 Edge tier (MLB only for now)
+7. Filter to 🔥 / 🎯 / 💎 tier picks only
+8. Write to dfs_shadow_picks Supabase table with model_version='v2.2'
+
+V2.2 changes from V2.1 (based on ~5,000 settled validation picks):
+- Model was uniformly 10-15pp overconfident → added bucket calibration
+- 💎 Edge tier dragged down by Hits/RBI/Strikeouts → restricted MLB Edge to
+  Earned Runs, Hits Allowed, Walks Issued, Total Bases, Outs Recorded
+- Added model_prob_over_raw / model_prob_under_raw fields for analysis
+- Tagged with model_version='v2.2' for clean week-over-week comparison
+
+Kill criterion: if 💎 Edge tier still hits <52% over 1 week of v2.2 data,
+retire the tier in V2.3.
 
 Required env vars (set as GitHub Action secrets):
 - SUPABASE_URL
@@ -59,6 +71,68 @@ L25_WINDOW = 25
 L10_WEIGHT = 0.70
 TRUST_THRESHOLD = 65
 EDGE_THRESHOLD = 5
+
+# ============================================================
+# V2.2 CHANGES
+# ============================================================
+MODEL_VERSION = "v2.2"
+
+# Kill criterion: if 💎 Edge tier still hits <52% after 1 week of v2.2
+# data accumulation, retire the tier entirely. Decision date: ~7 days
+# after first v2.2 snapshot.
+
+# Calibration table from V2.1 data (~5,000 settled picks):
+# Maps raw model probability bucket to a multiplier that adjusts the
+# probability toward observed reality. Built from Q2 calibration query.
+# Format: (lower_bound, upper_bound, target_probability)
+# Multiplier is computed as target / midpoint of bucket.
+CALIBRATION_TABLE = [
+    # (raw_min, raw_max, target_actual_pct)
+    (80.0, 100.1, 71.81),   # 80%+ raw → 72% calibrated (was hitting 71.81% in v2.1)
+    (70.0, 80.0,  61.55),   # 70-79% raw → 62% calibrated
+    (60.0, 70.0,  55.74),   # 60-69% raw → 56% calibrated
+    (50.0, 60.0,  40.69),   # 50-59% raw → 41% calibrated
+    (0.0,  50.0,  26.63),   # <50% raw → 27% calibrated
+]
+
+
+def calibrate_probability(raw_pct: float) -> float:
+    """
+    Adjust raw model probability based on observed v2.1 calibration data.
+    Input/output are 0-100 percentages, not 0-1.
+
+    Maps the raw probability to the midpoint of its bucket's observed
+    actual hit rate. This is a bucket-based (piecewise-constant) calibration.
+    Future V2.3 could replace this with isotonic regression for smoothness.
+    """
+    if raw_pct is None:
+        return None
+    for lo, hi, target in CALIBRATION_TABLE:
+        if lo <= raw_pct < hi:
+            # Linear scaling within the bucket so adjacent picks don't
+            # suddenly jump at bucket boundaries
+            bucket_mid = (lo + hi) / 2.0
+            if bucket_mid == 0:
+                return target
+            ratio = target / bucket_mid
+            calibrated = raw_pct * ratio
+            return max(0.0, min(100.0, calibrated))
+    return raw_pct  # safety net
+
+
+# 💎 Edge tier stat allowlist (V2.2)
+# Based on V2.1 settled data, these stats had Edge picks at >=46% hit rate:
+#   Earned Runs (60.66%), Hits Allowed (53.57%), Walks Issued (49.02%),
+#   Total Bases (48.41%), Outs Recorded (46.94%)
+# These stats had Edge picks below 46% and are excluded:
+#   Runs (46.80%), Hits (43.98%), RBI (39.47%), Strikeouts (31.48%)
+# NBA stats kept open since sample is still small.
+EDGE_TIER_ALLOWED_STATS = {
+    "mlb": {"Earned Runs", "Hits Allowed", "Walks Issued",
+            "Total Bases", "Outs Recorded"},
+    # NBA all stats allowed for now — need more validation data
+    "nba": {"Points", "Rebounds", "Assists", "Blocks", "Steals", "3PM"},
+}
 
 # Tiers to log
 LOG_TIERS = ["🔥", "🎯", "💎"]
@@ -648,12 +722,18 @@ def analyze_one(prop: dict, league: str, injuries: dict, vegas_total: float):
     if minutes_mult != 1.0 or total_mult != 1.0:
         sims = np.round(sims * minutes_mult * total_mult).astype(int).clip(min=0)
 
-    p_over = hit_prob(sims, line, "Over")
-    p_under = 1 - p_over
+    # V2.2: Raw probabilities from the MC simulation (pre-calibration)
+    p_over_raw = hit_prob(sims, line, "Over")
+    p_under_raw = 1 - p_over_raw
+
+    # V2.2: Apply calibration based on v2.1 observed bucket performance
+    p_over = calibrate_probability(p_over_raw * 100) / 100
+    p_under = calibrate_probability(p_under_raw * 100) / 100
+
     imp_over = implied_from_american(over_odds)
     imp_under = implied_from_american(under_odds)
 
-    # Pick best side
+    # Pick best side — uses CALIBRATED probabilities
     best_side, best_p, best_imp = "Over", p_over, imp_over
     if imp_over is None and imp_under is not None:
         best_side, best_p, best_imp = "Under", p_under, imp_under
@@ -673,11 +753,19 @@ def analyze_one(prop: dict, league: str, injuries: dict, vegas_total: float):
     if tier not in LOG_TIERS:
         return None  # Skip non-qualifying tiers
 
+    # V2.2: Stat allowlist enforcement for 💎 Edge tier only
+    # Trust and Combined tiers keep all stats.
+    if tier == "💎":
+        allowed_stats = EDGE_TIER_ALLOWED_STATS.get(league, set())
+        if stat not in allowed_stats:
+            return None  # Skip Edge picks on disallowed stats
+
     bet = bet_size(trust, edge_pp, tier)
 
     return {
         "snapshot_date": date.today().isoformat(),
         "league": league,
+        "model_version": MODEL_VERSION,
         "event_id": prop.get("event_id"),
         "commence_time": prop.get("commence_time"),
         "home_team": prop.get("home", ""),
@@ -693,8 +781,12 @@ def analyze_one(prop: dict, league: str, injuries: dict, vegas_total: float):
         "trust_score": trust,
         "edge_score": round(edge_sc, 1),
         "edge_pp": round(edge_pp, 2),
+        # Calibrated probabilities (used by downstream consumers)
         "model_prob_over": round(p_over * 100, 2),
         "model_prob_under": round(p_under * 100, 2),
+        # Raw probabilities (V2.2 — kept for future analysis)
+        "model_prob_over_raw": round(p_over_raw * 100, 2),
+        "model_prob_under_raw": round(p_under_raw * 100, 2),
         "implied_prob_over": round(imp_over * 100, 2) if imp_over else None,
         "implied_prob_under": round(imp_under * 100, 2) if imp_under else None,
         "suggested_bet_dollars": bet,
