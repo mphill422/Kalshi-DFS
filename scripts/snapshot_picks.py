@@ -75,7 +75,7 @@ EDGE_THRESHOLD = 5
 # ============================================================
 # V2.2 CHANGES
 # ============================================================
-MODEL_VERSION = "v2.2"
+MODEL_VERSION = "v2.2.1"
 
 # Kill criterion: if 💎 Edge tier still hits <52% after 1 week of v2.2
 # data accumulation, retire the tier entirely. Decision date: ~7 days
@@ -101,22 +101,38 @@ def calibrate_probability(raw_pct: float) -> float:
     Adjust raw model probability based on observed v2.1 calibration data.
     Input/output are 0-100 percentages, not 0-1.
 
-    Maps the raw probability to the midpoint of its bucket's observed
-    actual hit rate. This is a bucket-based (piecewise-constant) calibration.
-    Future V2.3 could replace this with isotonic regression for smoothness.
+    V2.2.1 PATCH: Strict ratchet — calibration can ONLY adjust probability
+    toward observed actuals, never inflate. If linear-within-bucket scaling
+    would push the value UP, we cap it at raw_pct (no inflation).
+
+    The original V2.2 had a bug: in the <50% bucket where target=26.63%,
+    the bucket midpoint scaling (target/midpoint = 26.63/25 = 1.065) was
+    being applied to values in the 40-50 range, producing UPWARD movement
+    (47% → 50.06%). The intent of calibration is to combat overconfidence,
+    not inflate marginal picks. This patch enforces "down-only" globally.
+
+    Logic per bucket:
+      1. Compute linear-scaled value
+      2. If scaled > raw: return raw (no inflation)
+      3. If scaled <= raw: return scaled (downward calibration applied)
+      4. Clamp final result to target as a floor (never go below observed)
     """
     if raw_pct is None:
         return None
     for lo, hi, target in CALIBRATION_TABLE:
         if lo <= raw_pct < hi:
-            # Linear scaling within the bucket so adjacent picks don't
-            # suddenly jump at bucket boundaries
             bucket_mid = (lo + hi) / 2.0
             if bucket_mid == 0:
-                return target
+                return raw_pct
             ratio = target / bucket_mid
-            calibrated = raw_pct * ratio
-            return max(0.0, min(100.0, calibrated))
+            scaled = raw_pct * ratio
+            scaled = max(0.0, min(100.0, scaled))
+
+            # Strict ratchet: scaling may only reduce, never inflate.
+            if scaled > raw_pct:
+                return raw_pct
+            # Floor: don't calibrate below the bucket's observed actual rate
+            return max(scaled, target)
     return raw_pct  # safety net
 
 
