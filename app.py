@@ -1,24 +1,28 @@
 """
-MPH Underdog Ladders Model — V2.0
+MPH Underdog Ladders Model — V2.1
 ==================================
 Monte Carlo prop modeling for Underdog / PrizePicks / Betr (NBA + MLB)
 
-V2.0 BUILD NOTES (vs V1.0):
-- Switched NBA data source: NBA Stats API → BallDontLie (avoids cloud IP block)
-- Distribution: Poisson fallback → Negative Binomial throughout (handles overdispersion)
-- Sims: 10K → 50K default (sidebar slider 10K/50K/100K)
+V2.1 DISPLAY UPDATE (vs V2.0):
+- 💎 Edge tier HIDDEN by default from betting views (still logged in background
+  by the snapshot job as control-group data). Optional reveal toggle added.
+- Qualifying 🎯 Trust + 🔥 Combined picks now sorted so the highest-hit-rate
+  stat-and-tier combinations float to the top, computed LIVE from settled
+  picks each load (not hardcoded — stays current as data grows).
+- Sample-size guard: stat/tier combos below MIN_RANK_SAMPLE settled picks are
+  treated as provisional and not ranked at the top on small-sample flukes.
+- All V2.0 model logic (NB Monte Carlo, Trust/Edge scoring, tier assignment,
+  ladder builder, validation dashboard) is UNCHANGED.
+
+V2.0 BUILD NOTES (retained):
+- NBA data: BallDontLie (avoids cloud IP block)
+- Distribution: Negative Binomial throughout (handles overdispersion)
+- Sims: 50K default (sidebar slider 10K/50K/100K)
 - Trust + Edge + 🔥 Combined scoring system (mirrors weather model)
-- Full stat coverage: NBA Pts/Reb/Ast/Blk/Stl/3PM + combos (PRA, P+R, P+A, R+A)
-- Full MLB stat coverage: hitter (H/TB/HR/RBI/R) + pitcher (K/ER/Outs/HA/BB)
-- Adjustment layer: Minutes (ESPN injury) + Vegas total + Pace (BallDontLie)
-- Top Plays summary panel per sport tab
-- Universal Ladder Builder w/ Standard/Demon/Goblin/Ladder modes
-- Sport-first tab structure with sub-tabs (Props/Ladders/Top Plays)
-- Sidebar sliders w/ discipline guardrails
+- Full NBA + MLB stat coverage; Universal Ladder Builder
 - Suggested bet sizing tied to score tier ($3-$10, $50/day cap)
 
 Repo: mphill422/Kalshi-DFS
-Replaces: V1.0 streamlit_app.py
 """
 
 import streamlit as st
@@ -34,7 +38,7 @@ import time
 # ============================================================
 
 st.set_page_config(
-    page_title="MPH DFS Model V2.0",
+    page_title="MPH DFS Model V2.1",
     page_icon="🪜",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -62,6 +66,13 @@ ESPN_MLB_INJURIES = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/
 DEFAULT_N_SIMS = 50_000
 L25_WINDOW = 25
 L10_WEIGHT = 0.70
+
+# --- V2.1 live-ranking constants ---
+# Minimum settled picks for a stat+tier combo to be trusted in the ranking.
+MIN_RANK_SAMPLE = 30
+# How many settled picks to pull for computing the live ranking. Larger =
+# more accurate rankings, slightly slower load.
+RANK_PICKS_PULL = 5000
 
 # --- Stat market mappings (Odds API) ---
 NBA_STAT_MARKETS = {
@@ -1039,6 +1050,145 @@ def fetch_run_log():
 
 
 # ============================================================
+# V2.1 — LIVE CATEGORY RANKING (computed from settled picks)
+# ============================================================
+
+@st.cache_data(ttl=600)
+def fetch_settled_for_ranking(limit: int = RANK_PICKS_PULL):
+    """
+    Pull a large sample of SETTLED picks (hit/miss only) so we can compute
+    live stat+tier hit rates. Cached 10 min so it isn't re-pulled every
+    interaction. Returns (DataFrame, error).
+    """
+    data, err = _supabase_get(
+        "dfs_picks_with_outcomes",
+        params={
+            "select": "league,stat,tier,outcome",
+            "outcome": "in.(hit,miss)",
+            "order": "snapshot_date.desc",
+            "limit": limit,
+        },
+    )
+    if err or not data:
+        return pd.DataFrame(), err
+    return pd.DataFrame(data), None
+
+
+@st.cache_data(ttl=600)
+def compute_stat_tier_ranking(limit: int = RANK_PICKS_PULL,
+                              min_sample: int = MIN_RANK_SAMPLE):
+    """
+    Compute live hit rate by (league, stat, tier) from settled picks.
+
+    Returns a dict keyed by (league, stat, tier) -> {
+        'hit_rate': float (0-100),
+        'settled': int,
+        'reliable': bool   # True if settled >= min_sample
+    }
+    Plus a flat DataFrame for optional display.
+
+    This is what keeps the betting view's ordering CURRENT: every load it
+    recomputes from the latest settled data rather than reading a hardcoded
+    list. The sample-size guard (min_sample) prevents a small-sample fluke
+    from being treated as a top-ranked combo.
+    """
+    df, err = fetch_settled_for_ranking(limit=limit)
+    if err or df.empty:
+        return {}, pd.DataFrame(), err
+
+    # Defensive: ensure expected columns exist
+    needed = {"league", "stat", "tier", "outcome"}
+    if not needed.issubset(set(df.columns)):
+        return {}, pd.DataFrame(), "ranking: missing expected columns"
+
+    rows = []
+    ranking = {}
+    grouped = df.groupby(["league", "stat", "tier"])
+    for (league, stat, tier), g in grouped:
+        settled = int(len(g))
+        hits = int((g["outcome"] == "hit").sum())
+        hit_rate = (hits / settled * 100.0) if settled > 0 else 0.0
+        reliable = settled >= min_sample
+        ranking[(league, stat, tier)] = {
+            "hit_rate": round(hit_rate, 1),
+            "settled": settled,
+            "reliable": reliable,
+        }
+        rows.append({
+            "league": league, "stat": stat, "tier": tier,
+            "settled": settled, "hits": hits,
+            "hit_rate_pct": round(hit_rate, 1),
+            "reliable": reliable,
+        })
+
+    flat = pd.DataFrame(rows)
+    if not flat.empty:
+        flat = flat.sort_values(
+            ["league", "reliable", "hit_rate_pct"],
+            ascending=[True, False, False],
+        ).reset_index(drop=True)
+    return ranking, flat, None
+
+
+def _rank_value(row: dict, league: str, ranking: dict, min_sample: int = MIN_RANK_SAMPLE):
+    """
+    Sort key for a single pick row: returns a float where HIGHER = better.
+
+    A pick's rank is the live hit rate of its (league, stat, tier) combo.
+    Combos below the sample threshold are pushed below reliable ones so a
+    small-sample fluke can't jump to the top, but they still rank above
+    combos with no data at all.
+    """
+    stat = row.get("Stat")
+    tier = row.get("Tier")
+    info = ranking.get((league, stat, tier))
+    if info is None:
+        # No historical data for this combo — rank lowest.
+        return -1.0
+    if not info["reliable"]:
+        # Provisional: scale down so it sits below any reliable combo.
+        # (reliable combos get hit_rate as-is, 0-100; provisional get hit_rate
+        #  mapped into the negative range so they always sort lower.)
+        return info["hit_rate"] - 1000.0
+    return info["hit_rate"]
+
+
+def annotate_and_rank(df_out: pd.DataFrame, league: str, ranking: dict,
+                      min_sample: int = MIN_RANK_SAMPLE) -> pd.DataFrame:
+    """
+    Add a 'Cat Win%' column (live hit rate of the pick's stat+tier combo) and
+    sort the betting picks so the highest-hit-rate combos float to the top.
+    Provisional (small-sample) combos are tagged and held below reliable ones.
+    """
+    if df_out.empty:
+        return df_out
+
+    cat_winrate = []
+    cat_note = []
+    sort_keys = []
+    for _, row in df_out.iterrows():
+        r = row.to_dict()
+        info = ranking.get((league, r.get("Stat"), r.get("Tier")))
+        sort_keys.append(_rank_value(r, league, ranking, min_sample))
+        if info is None:
+            cat_winrate.append(None)
+            cat_note.append("no history")
+        elif not info["reliable"]:
+            cat_winrate.append(info["hit_rate"])
+            cat_note.append(f"provisional (n={info['settled']})")
+        else:
+            cat_winrate.append(info["hit_rate"])
+            cat_note.append(f"n={info['settled']}")
+
+    df_out = df_out.copy()
+    df_out["Cat Win%"] = cat_winrate
+    df_out["Cat Sample"] = cat_note
+    df_out["_rank"] = sort_keys
+    df_out = df_out.sort_values("_rank", ascending=False).drop(columns=["_rank"])
+    return df_out.reset_index(drop=True)
+
+
+# ============================================================
 # UI — MOBILE CARD RENDERER
 # ============================================================
 
@@ -1075,6 +1225,8 @@ def render_pick_card(row: dict, idx: int, key_prefix: str):
     model_o = row.get("Model O%", None)
     imp_o = row.get("Imp O%", None)
     note = row.get("Note", "") or ""
+    cat_winrate = row.get("Cat Win%", None)
+    cat_sample = row.get("Cat Sample", "") or ""
 
     color = _tier_color(tier)
 
@@ -1106,6 +1258,17 @@ def render_pick_card(row: dict, idx: int, key_prefix: str):
             f"<b>{stat}</b> &nbsp;·&nbsp; {side} <b>{line}</b></div>",
             unsafe_allow_html=True
         )
+
+        # V2.1: Category win-rate badge (live from settled data)
+        if cat_winrate is not None:
+            cat_color = "#22c55e" if cat_winrate >= 60 else ("#eab308" if cat_winrate >= 53 else "#ef4444")
+            prov = " · provisional" if cat_sample.startswith("provisional") else ""
+            st.markdown(
+                f"<div style='font-size:13px; color:#aaa; padding-bottom:4px;'>"
+                f"Category win rate: <b style='color:{cat_color};'>{cat_winrate}%</b> "
+                f"<span style='color:#777;'>({cat_sample.replace('provisional ', '')}{prov})</span></div>",
+                unsafe_allow_html=True
+            )
 
         # Score chips: Trust + Edge
         c_trust, c_edge = st.columns(2)
@@ -1157,12 +1320,13 @@ def render_cards_view(df: pd.DataFrame, key_prefix: str = "card"):
     """
     Render a list of cards filtered to best picks by default,
     with a 'Show all' toggle to reveal lower-tier picks.
+    NOTE: 💎 Edge tier is excluded upstream before this is called (V2.1).
     """
     if df.empty:
         st.info("No plays clear current thresholds.")
         return
 
-    # Default filter: best tiers only
+    # Default filter: best tiers only (Edge already removed upstream in V2.1)
     best_tiers = ["🔥", "🎯", "💎"]
     best_df = df[df["Tier"].isin(best_tiers)].copy()
     rest_df = df[~df["Tier"].isin(best_tiers)].copy()
@@ -1172,9 +1336,9 @@ def render_cards_view(df: pd.DataFrame, key_prefix: str = "card"):
     n_rest = len(rest_df)
 
     if n_best == 0:
-        st.info(f"No 🔥 / 🎯 / 💎 picks tonight. {n_rest} lower-tier rows available below.")
+        st.info(f"No 🔥 / 🎯 picks tonight. {n_rest} lower-tier rows available below.")
     else:
-        st.markdown(f"### Best picks ({n_best})")
+        st.markdown(f"### Best picks ({n_best}) — ranked by live category win rate")
         for i, (_, row) in enumerate(best_df.iterrows()):
             render_pick_card(row.to_dict(), i, f"{key_prefix}_best")
 
@@ -1189,8 +1353,9 @@ def render_cards_view(df: pd.DataFrame, key_prefix: str = "card"):
 # UI — HEADER & SIDEBAR
 # ============================================================
 
-st.title("🪜 MPH DFS Model — V2.0")
-st.caption(f"Negative Binomial MC · BallDontLie + MLB Stats API · Trust + Edge + 🔥 Combined scoring · {DEFAULT_N_SIMS:,} sims default")
+st.title("🪜 MPH DFS Model — V2.1")
+st.caption(f"Negative Binomial MC · BallDontLie + MLB Stats API · Trust + Edge + 🔥 Combined scoring · "
+           f"Picks ranked live by category win rate · {DEFAULT_N_SIMS:,} sims default")
 
 with st.sidebar:
     st.markdown("### ⚙️ Controls")
@@ -1215,11 +1380,18 @@ with st.sidebar:
                               help="Off by default to enforce discipline. Toggle on to see all rows.")
 
     st.markdown("---")
+    st.markdown("### 💎 Edge Tier")
+    show_edge = st.checkbox("Reveal 💎 Edge tier picks", value=False,
+                             help="OFF by default. The Edge tier loses across nearly all stats "
+                                  "(validated), so it's hidden from betting. It's still logged in "
+                                  "the background as control-group data. Toggle ON only to inspect it.")
+
+    st.markdown("---")
     st.markdown("### 🎯 Tier Legend")
     st.markdown("""
 - 🔥 **Combined** — Trust ≥ thresh & Edge ≥ thresh
-- 🎯 **Trust pick** — high consistency
-- 💎 **Edge pick** — high value
+- 🎯 **Trust pick** — high consistency *(your workhorse)*
+- 💎 **Edge pick** — *hidden by default — loses, do not bet*
 - 🟡 Thin signal
 - 🔴 Fade
 - ⚪ No data
@@ -1238,8 +1410,38 @@ with st.sidebar:
     st.caption("$3-$10 per bet · $50/day cap during validation")
 
     st.markdown("---")
-    st.caption("**V2.0** — research-informed build")
-    st.caption("Shadow validate 2 weeks before live bets")
+    st.caption("**V2.1** — Edge hidden · live category ranking")
+    st.caption("Bet 🎯 Trust + 🔥 Combined on top-ranked stats")
+
+
+# Compute the live category ranking once per load (cached). Used to order
+# the betting picks in both NBA and MLB tabs.
+_RANKING, _RANK_FLAT, _RANK_ERR = compute_stat_tier_ranking()
+
+
+def _prepare_betting_df(df_out: pd.DataFrame, league: str, show_edge: bool,
+                        show_below: bool) -> pd.DataFrame:
+    """
+    V2.1 shared prep for the betting view:
+      1. Optionally drop 💎 Edge tier (hidden by default).
+      2. Optionally drop below-threshold rows.
+      3. Annotate with live category win rate + sort highest-first.
+    """
+    df = df_out.copy()
+
+    # 1. Hide Edge tier unless explicitly revealed
+    if not show_edge:
+        df = df[df["Tier"] != "💎"]
+
+    # 2. Threshold filter
+    if not show_below:
+        keep = ["🔥", "🎯"] + (["💎"] if show_edge else [])
+        df = df[df["Tier"].isin(keep)]
+
+    # 3. Live ranking (only meaningful for the qualifying tiers)
+    if not df.empty and _RANKING:
+        df = annotate_and_rank(df, league, _RANKING)
+    return df
 
 
 # ============================================================
@@ -1260,7 +1462,8 @@ with tab_nba:
     # --- NBA PROPS ---
     with nba_props_tab:
         st.subheader("🏀 NBA Player Props")
-        st.caption("Pulled from DraftKings + FanDuel via Odds API · scored with NB Monte Carlo")
+        st.caption("Pulled from DraftKings + FanDuel via Odds API · scored with NB Monte Carlo · "
+                   "ranked by live category win rate")
 
         nba_stats_choice = st.multiselect(
             "Stats to analyze",
@@ -1319,18 +1522,12 @@ with tab_nba:
 
                     df_out = pd.DataFrame(rows)
 
-                    # Sort by tier priority then edge
-                    tier_order = {"🔥": 0, "🎯": 1, "💎": 2, "🟡": 3, "🔴": 4, "⚪": 5}
-                    df_out["_order"] = df_out["Tier"].map(tier_order).fillna(99)
-                    df_out["_edge"] = df_out["Edge pp"].fillna(-999)
-                    df_out = df_out.sort_values(["_order", "_edge"], ascending=[True, False])
-                    df_out = df_out.drop(columns=["_order", "_edge"])
-
-                    if not show_below:
-                        df_out = df_out[df_out["Tier"].isin(["🔥", "🎯", "💎"])]
+                    # V2.1: hide Edge, threshold filter, then rank by live category win rate
+                    df_out = _prepare_betting_df(df_out, "nba", show_edge, show_below)
 
                     if df_out.empty:
-                        st.info("No plays clear current thresholds. Try toggling 'Show below threshold' or adjusting sliders.")
+                        st.info("No plays clear current thresholds. Try toggling 'Show below threshold' "
+                                "or adjusting sliders.")
                     elif mobile_mode:
                         # Card layout for phone
                         render_cards_view(df_out, key_prefix="nba_props")
@@ -1340,14 +1537,14 @@ with tab_nba:
                         # Table layout for Mac
                         if compact_view:
                             compact_cols = ["Tier", "Player", "Game", "Stat", "Line", "Side",
-                                            "L10", "Trust", "Edge pp", "Bet $", "Note"]
+                                            "Cat Win%", "L10", "Trust", "Edge pp", "Bet $", "Note"]
                             display_df = df_out[[c for c in compact_cols if c in df_out.columns]]
                         else:
                             display_df = df_out
                         st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
                         st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')} · "
                                    f"{'Compact view' if compact_view else 'Full detail'} "
-                                   f"· {len(display_df)} rows")
+                                   f"· {len(display_df)} rows · ranked by live category win rate")
 
     # --- NBA LADDERS ---
     with nba_ladders_tab:
@@ -1448,7 +1645,7 @@ with tab_nba:
                             elif tier == "🎯":
                                 rec = "🎯 Trust pick"
                             elif tier == "💎":
-                                rec = "💎 Edge pick"
+                                rec = "💎 Edge pick (caution — tier hidden in props)"
                             elif tier == "🔴":
                                 rec = "🔴 FADE"
                             elif p_hit < 0.5:
@@ -1508,7 +1705,7 @@ with tab_nba:
 **Reading the tiers:**
 - 🔥 **Combined** = best of both worlds, max sizing
 - 🎯 **Trust** = high consistency, lower payout, income lane
-- 💎 **Edge** = high value, more variance, payoff lane
+- 💎 **Edge** = hidden by default (loses); reveal only to inspect
 
 Use the sidebar sliders to adjust thresholds slate-by-slate.
         """)
@@ -1524,12 +1721,13 @@ with tab_mlb:
     # --- MLB PROPS ---
     with mlb_props_tab:
         st.subheader("⚾ MLB Player Props")
-        st.caption("Hitter + pitcher stats from DraftKings + FanDuel · NB Monte Carlo")
+        st.caption("Hitter + pitcher stats from DraftKings + FanDuel · NB Monte Carlo · "
+                   "ranked by live category win rate")
 
         mlb_stats_choice = st.multiselect(
             "Stats to analyze",
             list(MLB_STAT_MARKETS.keys()),
-            default=["Hits", "Total Bases", "Strikeouts"],
+            default=["RBI", "Runs", "Total Bases"],
             key="mlb_props_stats",
         )
 
@@ -1574,14 +1772,9 @@ with tab_mlb:
                     progress.empty()
 
                     df_out = pd.DataFrame(rows)
-                    tier_order = {"🔥": 0, "🎯": 1, "💎": 2, "🟡": 3, "🔴": 4, "⚪": 5}
-                    df_out["_order"] = df_out["Tier"].map(tier_order).fillna(99)
-                    df_out["_edge"] = df_out["Edge pp"].fillna(-999)
-                    df_out = df_out.sort_values(["_order", "_edge"], ascending=[True, False])
-                    df_out = df_out.drop(columns=["_order", "_edge"])
 
-                    if not show_below:
-                        df_out = df_out[df_out["Tier"].isin(["🔥", "🎯", "💎"])]
+                    # V2.1: hide Edge, threshold filter, then rank by live category win rate
+                    df_out = _prepare_betting_df(df_out, "mlb", show_edge, show_below)
 
                     if df_out.empty:
                         st.info("No plays clear thresholds.")
@@ -1594,14 +1787,14 @@ with tab_mlb:
                         # Table layout for Mac
                         if compact_view:
                             compact_cols = ["Tier", "Player", "Game", "Stat", "Line", "Side",
-                                            "L10", "Trust", "Edge pp", "Bet $", "Note"]
+                                            "Cat Win%", "L10", "Trust", "Edge pp", "Bet $", "Note"]
                             display_df = df_out[[c for c in compact_cols if c in df_out.columns]]
                         else:
                             display_df = df_out
                         st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
                         st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')} · "
                                    f"{'Compact view' if compact_view else 'Full detail'} "
-                                   f"· {len(display_df)} rows")
+                                   f"· {len(display_df)} rows · ranked by live category win rate")
 
     # --- MLB LADDERS ---
     with mlb_ladders_tab:
@@ -1749,9 +1942,27 @@ with tab_validation:
 
     st.markdown("---")
 
+    # V2.1: Live category ranking (the same data that orders the betting view)
+    st.markdown("### 🏆 Live Category Ranking")
+    st.caption("Hit rate by stat + tier, computed live from settled picks. This is what orders "
+               "your betting picks. 'Reliable' = enough settled picks to trust; provisional combos "
+               "are held back so small samples don't rank falsely high.")
+    if _RANK_ERR:
+        st.warning(f"Ranking unavailable: {_RANK_ERR}")
+    elif _RANK_FLAT.empty:
+        st.info("No settled picks yet to compute ranking.")
+    else:
+        rank_show = _RANK_FLAT.copy()
+        rank_show["reliable"] = rank_show["reliable"].map({True: "✅", False: "⚠️ prov"})
+        st.dataframe(rank_show, use_container_width=True, hide_index=True, height=360)
+        st.caption(f"Sample threshold: ≥{MIN_RANK_SAMPLE} settled picks to be 'reliable' · "
+                   f"pulled up to {RANK_PICKS_PULL:,} settled picks")
+
+    st.markdown("---")
+
     # Tier performance
     st.markdown("### 🎯 Tier Hit Rates")
-    st.caption("The validation truth — should be high for 🔥/🎯/💎 if model has edge.")
+    st.caption("The validation truth — should be high for 🔥/🎯 if model has edge.")
     tier_df, err = fetch_tier_performance()
     if err:
         st.warning(f"No tier data yet: {err}")
@@ -1763,7 +1974,9 @@ with tab_validation:
     st.markdown("---")
 
     # Stat performance
-    st.markdown("### 📊 Hit Rate by Stat")
+    st.markdown("### 📊 Hit Rate by Stat (blended across tiers)")
+    st.caption("Note: this view blends tiers together. Use the Live Category Ranking above for "
+               "the stat+tier breakdown that actually drives betting decisions.")
     stat_df, err = fetch_stat_performance()
     if err:
         st.warning(f"No stat data: {err}")
@@ -1940,19 +2153,21 @@ with tab_settings:
 **Tier Thresholds (default):**
 - 🔥 Combined: Trust ≥ 65 AND Edge ≥ 5pp
 - 🎯 Trust pick: Trust ≥ 65 only
-- 💎 Edge pick: Edge ≥ 5pp only
+- 💎 Edge pick: Edge ≥ 5pp only — **HIDDEN by default (loses; control-group only)**
 - 🔴 Fade: negative edge
+
+**V2.1 betting view:**
+- 💎 Edge tier hidden by default (reveal toggle in sidebar)
+- Picks ranked by LIVE category win rate (stat + tier) from settled data
+- Sample-size guard: combos below MIN_RANK_SAMPLE settled picks are provisional
 
 **Adjustments wired:**
 - Minutes mult: ESPN injury status → Active 1.0 / Probable 0.95 / DTD 0.85 / Q 0.70 / D 0.30 / Out 0
 - Vegas total mult: game total / league avg (NBA 225, MLB 8.5)
-- Pace: deferred (V2.1 with BDL pace data)
-- DvP: deferred (V2.1)
 
 **Validation discipline:**
-- Shadow validate ≥ 2 weeks before live bets
 - $10/bet ceiling, $50/day cap during validation
-    """)
+""")
 
     st.markdown("---")
-    st.caption(f"V2.0 | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    st.caption(f"V2.1 | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
