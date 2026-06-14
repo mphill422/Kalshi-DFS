@@ -74,6 +74,37 @@ MIN_RANK_SAMPLE = 30
 # more accurate rankings, slightly slower load.
 RANK_PICKS_PULL = 5000
 
+# ============================================================
+# V2.1 — PROBABILITY CALIBRATION (display layer)
+# ============================================================
+# The raw model is systematically OVERCONFIDENT. Validated against ~9,000
+# settled picks, claimed probability vs actual hit rate diverged at every
+# level (claimed 85% -> actual 68%, claimed 93% -> actual 72%, claimed 100%
+# -> actual 68%). Left uncorrected, the model sees huge fake edges exactly
+# where it is most wrong.
+#
+# These breakpoints are an isotonic-regression fit (monotonic, weighted by
+# sample size) of claimed % -> honest %. We apply it as a DISPLAY layer only:
+# the app shows calibrated probabilities and computes edge from them, but the
+# underlying model and the snapshot logging are left untouched. This is
+# deliberately NOT the V2.2.1 approach (which baked calibration into the
+# snapshot and broke tier composition). Honest edge = calibrated_prob - implied.
+#
+# Toggle CALIBRATION_ON via the sidebar to compare raw vs honest.
+CALIB_CLAIMED = [0, 10, 20, 30, 40, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100]
+CALIB_HONEST = [26.0, 26.0, 26.0, 26.0, 28.6, 37.5, 43.0, 48.1, 53.0, 56.7,
+                60.4, 64.3, 68.0, 70.1, 71.2, 71.2]
+
+
+def calibrate_prob(claimed_pct):
+    """Map a raw model probability (0-100) to its honest calibrated value via
+    piecewise-linear interpolation over the fitted isotonic curve. Returns the
+    input unchanged if None."""
+    if claimed_pct is None:
+        return None
+    c = max(0.0, min(100.0, float(claimed_pct)))
+    return float(np.interp(c, CALIB_CLAIMED, CALIB_HONEST))
+
 # --- Stat market mappings (Odds API) ---
 NBA_STAT_MARKETS = {
     "Points": "player_points",
@@ -837,8 +868,14 @@ def analyze_prop(player: str, stat: str, line: float,
                  trust_thresh: float, edge_thresh: float,
                  vegas_total: float = None,
                  home_team: str = "", away_team: str = "",
-                 commence_time: str = "") -> dict:
-    """Build a fully-scored analysis row."""
+                 commence_time: str = "",
+                 calibrate: bool = True) -> dict:
+    """Build a fully-scored analysis row.
+
+    V2.1: if calibrate=True, the probabilities used for edge and tier are the
+    honest (calibrated) ones, so fake edges from model overconfidence are
+    removed. The raw model probabilities are still reported for transparency.
+    """
     if league == "nba":
         history = get_nba_history(player, stat)
         league_avg_total = 225.0
@@ -876,12 +913,23 @@ def analyze_prop(player: str, stat: str, line: float,
     sims = build_player_distribution(values, n_sims=n_sims)
     sims = apply_adjustments(sims, minutes_mult=minutes_mult, total_mult=total_mult)
 
-    p_over = hit_probability(sims, line, "Over")
-    p_under = 1 - p_over
+    # Raw model probabilities from the Monte Carlo
+    p_over_raw = hit_probability(sims, line, "Over")
+    p_under_raw = 1 - p_over_raw
+
+    # V2.1 calibration (display layer): map raw -> honest. The model is
+    # overconfident, so these honest numbers are what we score edge/tier from.
+    if calibrate:
+        p_over = calibrate_prob(p_over_raw * 100) / 100.0
+        p_under = calibrate_prob(p_under_raw * 100) / 100.0
+    else:
+        p_over = p_over_raw
+        p_under = p_under_raw
+
     imp_over = implied_prob_from_american(over_odds)
     imp_under = implied_prob_from_american(under_odds)
 
-    # Score both sides, pick the better one
+    # Score both sides, pick the better one (using calibrated probs)
     best_side = "Over"
     best_p = p_over
     best_imp = imp_over
@@ -913,6 +961,14 @@ def analyze_prop(player: str, stat: str, line: float,
             notes.append(f"⚠️ {dnp}/{total} DNPs (avg may be misleading)")
     note = " · ".join(notes) if notes else ""
 
+    # Raw edge (uncalibrated) shown for transparency so you can see how much
+    # the model's overconfidence was inflating the apparent edge.
+    if best_side == "Over":
+        best_p_raw = p_over_raw
+    else:
+        best_p_raw = p_under_raw
+    raw_edge_pp = (best_p_raw - best_imp) * 100 if best_imp is not None else None
+
     return {
         "Tier": tier, "Player": player, "Game": game_label,
         "Status": f"{inj_emoji} {inj_status}",
@@ -921,11 +977,16 @@ def analyze_prop(player: str, stat: str, line: float,
         "Season": round(season_avg, 2) if season_avg else None,
         "n": n_games,
         "Trust": trust, "Edge": edge_sc,
+        # Honest (calibrated) probabilities — what edge/tier are scored from
         "Model O%": round(p_over * 100, 1),
         "Imp O%": round(imp_over * 100, 1) if imp_over else None,
         "Model U%": round(p_under * 100, 1),
         "Imp U%": round(imp_under * 100, 1) if imp_under else None,
+        # Raw (uncalibrated) probabilities — transparency only
+        "Raw O%": round(p_over_raw * 100, 1),
+        "Raw U%": round(p_under_raw * 100, 1),
         "Edge pp": round(edge_pp, 1) if edge_pp is not None else None,
+        "Raw Edge pp": round(raw_edge_pp, 1) if raw_edge_pp is not None else None,
         "Bet $": bet_size,
         "Note": note,
     }
@@ -1227,6 +1288,7 @@ def render_pick_card(row: dict, idx: int, key_prefix: str):
     note = row.get("Note", "") or ""
     cat_winrate = row.get("Cat Win%", None)
     cat_sample = row.get("Cat Sample", "") or ""
+    raw_edge_pp = row.get("Raw Edge pp", None)
 
     color = _tier_color(tier)
 
@@ -1284,10 +1346,15 @@ def render_pick_card(row: dict, idx: int, key_prefix: str):
             edge_str = f"{edge_pp:+.1f}pp" if edge_pp is not None else "—"
             edge_color = "#22c55e" if (edge_pp is not None and edge_pp >= 5) else (
                 "#ef4444" if (edge_pp is not None and edge_pp < 0) else "#eab308")
+            raw_note = ""
+            if raw_edge_pp is not None and edge_pp is not None and abs(raw_edge_pp - edge_pp) >= 1:
+                raw_note = (f"<br><span style='font-size:9px; color:#777;'>"
+                            f"raw {raw_edge_pp:+.1f}pp (inflated)</span>")
             st.markdown(
                 f"<div style='background:#1f2937; padding:6px 10px; border-radius:6px; text-align:center;'>"
-                f"<span style='color:#888; font-size:11px;'>EDGE</span><br>"
-                f"<span style='font-size:18px; font-weight:bold; color:{edge_color};'>{edge_str}</span></div>",
+                f"<span style='color:#888; font-size:11px;'>EDGE (honest)</span><br>"
+                f"<span style='font-size:18px; font-weight:bold; color:{edge_color};'>{edge_str}</span>"
+                f"{raw_note}</div>",
                 unsafe_allow_html=True
             )
 
@@ -1378,6 +1445,16 @@ with st.sidebar:
     edge_thresh = st.slider("Edge threshold (pp)", 0, 15, 5, 1)
     show_below = st.checkbox("Show below threshold (anti-discipline)", value=True,
                               help="Off by default to enforce discipline. Toggle on to see all rows.")
+
+    st.markdown("---")
+    st.markdown("### 🎚️ Calibration")
+    calibration_on = st.checkbox("Honest probabilities (calibration ON)", value=True,
+                                  help="ON by default. The raw model is overconfident "
+                                       "(claims 85%, hits 68%). Calibration maps its "
+                                       "probabilities to honest values learned from ~9,000 "
+                                       "settled picks, so edge is computed truthfully and "
+                                       "fake edges disappear. Turn OFF only to see the raw "
+                                       "(inflated) numbers for comparison.")
 
     st.markdown("---")
     st.markdown("### 💎 Edge Tier")
@@ -1516,6 +1593,7 @@ with tab_nba:
                             vegas_total=event_totals.get(p["event_id"]),
                             home_team=p.get("home", ""), away_team=p.get("away", ""),
                             commence_time=p.get("commence_time", ""),
+                            calibrate=calibration_on,
                         ))
                         progress.progress((i + 1) / total, text=f"MC: {i+1}/{total}")
                     progress.empty()
@@ -1537,7 +1615,7 @@ with tab_nba:
                         # Table layout for Mac
                         if compact_view:
                             compact_cols = ["Tier", "Player", "Game", "Stat", "Line", "Side",
-                                            "Cat Win%", "L10", "Trust", "Edge pp", "Bet $", "Note"]
+                                            "Cat Win%", "L10", "Trust", "Edge pp", "Raw Edge pp", "Bet $", "Note"]
                             display_df = df_out[[c for c in compact_cols if c in df_out.columns]]
                         else:
                             display_df = df_out
@@ -1767,6 +1845,7 @@ with tab_mlb:
                             vegas_total=event_totals.get(p["event_id"]),
                             home_team=p.get("home", ""), away_team=p.get("away", ""),
                             commence_time=p.get("commence_time", ""),
+                            calibrate=calibration_on,
                         ))
                         progress.progress((i + 1) / total, text=f"MC: {i+1}/{total}")
                     progress.empty()
@@ -1787,7 +1866,7 @@ with tab_mlb:
                         # Table layout for Mac
                         if compact_view:
                             compact_cols = ["Tier", "Player", "Game", "Stat", "Line", "Side",
-                                            "Cat Win%", "L10", "Trust", "Edge pp", "Bet $", "Note"]
+                                            "Cat Win%", "L10", "Trust", "Edge pp", "Raw Edge pp", "Bet $", "Note"]
                             display_df = df_out[[c for c in compact_cols if c in df_out.columns]]
                         else:
                             display_df = df_out
