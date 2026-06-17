@@ -1,41 +1,47 @@
 """
-PropLine Soft-Line Edge Test — V1
+PropLine Soft-Line Edge Test — V2
 ==================================
 THE definitive test: does the CALIBRATED model beat the soft pick'em lines
-(PrizePicks / Underdog) by enough to clear their house edge?
+by enough to clear the REAL bar you must beat on each platform?
 
-All prior validation scored the model against DraftKings/FanDuel (sharp) lines
-and found ~zero edge once calibration removed the model's overconfidence. But
-the platforms actually bet are PrizePicks/Underdog, which are SOFTER. This job
-measures the model against THOSE lines using PropLine's no-vig fair line as the
-honest benchmark.
+WHAT CHANGED FROM V1 (and why):
+-------------------------------
+V1 had a fatal benchmark bug. Pick'em platforms (PrizePicks, ParlayPlay)
+carry NO real odds, so V1 fell back to a 50% coin-flip and flagged a fake
+"edge" on ~70% of all lines. The 308 rows it logged were almost entirely
+garbage (model vs 50%, not vs anything real).
 
-What it does each run:
-1. Pull today's + tomorrow's MLB events from PropLine.
-2. For each event, pull PrizePicks + Underdog + Pinnacle lines for the target
-   markets (RBI, Runs, Total Bases, Strikeouts).
-3. For each player line, compute the model's CALIBRATED probability (same
-   calibration curve as the app — the model is overconfident, so we correct it).
-4. Compare calibrated prob to the platform's NO-VIG implied prob.
-   - If PropLine provides a no-vig/fair field, use it.
-   - Otherwise fall back to Pinnacle's line as the sharp no-vig reference,
-     or de-vig the platform's own over/under pair.
-5. Log every candidate where calibrated_prob - novig_implied >= EDGE_MARGIN
-   into Supabase table `propline_edge_test` for later settlement + analysis.
+V2 fixes the benchmark honestly, three ways:
+  1. PICK'EM PLATFORMS (no odds) are now scored against the REAL per-leg
+     BREAKEVEN you must clear to be profitable — not 50%. PrizePicks 2-pick
+     power pays 3x, so each leg needs ~57.7% to break even. A model leg at
+     60% vs a 57.7% bar is a real +2.3pp edge. A leg at 66% vs 50% was a
+     fake +16pp. This collapses the fake candidates and shows real ones.
+  2. REAL-ODDS PLATFORMS (Underdog carries real implied values) are still
+     scored against their de-vigged no-vig line — the honest comparison
+     that already worked in V1.
+  3. PARLAYPLAY added to the soft-book list. Research flag: ParlayPlay is
+     reported to run SOFTER, slower-updating MLB lines than PrizePicks /
+     Underdog — the most likely place a real edge exists, if one does.
 
-This does NOT place bets and does NOT touch the existing model/snapshot. It
-accumulates candidate edges so that, after ~2 weeks of settled results, we can
-answer definitively whether real edge exists on the soft platforms.
+Also fixed: the 500 "ON CONFLICT DO UPDATE cannot affect row a second time"
+error. V1 sent duplicate (player, stat, line, side) rows in one batch. V2
+de-dupes before upsert (keeps the highest-edge row per key), so all rows
+write cleanly.
+
+This does NOT place bets and does NOT touch the model/snapshot. It logs
+candidates so that, after ~2 weeks of settled results, we run one query:
+did the flagged edges actually win vs their benchmark? Honest prior: edge
+is thin (this is the 4th efficient-market test). The data decides.
+
+ONE-TIME SETUP (run once in Supabase SQL Editor before first V2 run):
+  alter table propline_edge_test
+    add column if not exists benchmark_type text;
 
 Required GitHub secrets:
 - PROPLINE_API_KEY
 - SUPABASE_URL
 - SUPABASE_KEY   (service_role)
-
-NOTE ON FIRST RUN: PropLine claims the-odds-api-compatible shape. If the odds
-payload differs, this script prints the raw structure of the first event's
-bookmakers array to the Action log and exits gracefully, so we can adapt the
-parser in one more pass without guessing.
 """
 
 import os
@@ -76,13 +82,36 @@ TARGET_MARKETS = {
     "pitcher_strikeouts": "Strikeouts",
 }
 
-SOFT_BOOKS = ["prizepicks", "underdog"]
+# Soft pick'em platforms we score. ParlayPlay added (softest MLB lines).
+SOFT_BOOKS = ["prizepicks", "underdog", "parlayplay"]
 SHARP_BOOK = "pinnacle"
 
-# Minimum honest edge (calibrated prob - no-vig implied, in pp) to log a
-# candidate. Set conservatively: soft-book house edge means small gaps aren't
-# real. We log anything >= this so we can study the distribution; we are NOT
-# betting these, just measuring.
+# ---- PER-PLATFORM PICK'EM BREAKEVENS ----
+# For platforms that carry NO real odds, this is the per-leg win probability
+# a pick must clear to be profitable, given the contest's payout multiplier.
+# Formula: breakeven = (1 / payout_multiplier) ** (1 / n_picks)
+#
+#   PrizePicks 2-pick power (3.0x):  (1/3)  ** (1/2) = 0.577   <- CONFIRMED
+#   PrizePicks 3-pick power (6.0x):  (1/6)  ** (1/3) = 0.550
+#   Underdog   2-pick std   (3.5x):  (1/3.5)** (1/2) = 0.535   <- CONFIRMED
+#   Underdog   3-pick std   (6.0x):  (1/6)  ** (1/3) = 0.550
+#
+# We score against the 2-PICK bar by default (the realistic, strictest
+# common play). Underdog usually delivers REAL odds via PropLine, so its
+# breakeven here is only a fallback if odds are missing.
+#
+# ParlayPlay multiplier is NOT yet confirmed — using PrizePicks' 2-pick bar
+# (0.577) as a conservative placeholder. ⚠️ CONFIRM PARLAYPLAY 2-PICK PAYOUT
+# and update this number before trusting ParlayPlay candidates.
+PICKEM_BREAKEVEN = {
+    "prizepicks": 0.577,
+    "parlayplay": 0.577,   # ⚠️ placeholder — confirm real multiplier
+    "underdog": 0.535,     # fallback only; real odds preferred when present
+}
+DEFAULT_PICKEM_BREAKEVEN = 0.577
+
+# Minimum honest edge (calibrated prob - real benchmark, in pp) to log a
+# candidate. Now measured against a REAL bar, so 3pp is meaningful.
 EDGE_MARGIN = 3.0
 
 N_SIMULATIONS = 10_000
@@ -205,11 +234,8 @@ def parse_event_odds(data):
     Convert a PropLine odds payload into normalized rows:
       {market_key, stat, player, line, book, over_odds, under_odds,
        over_prob_novig, under_prob_novig}
-    Built defensively for the-odds-api-style shape:
-      data['bookmakers'] = [ {key, markets:[ {key, outcomes:[
-          {name:'Over'/'Under', description:player, point:line, price:odds,
-           ... possibly 'fair'/'no_vig' fields} ]} ]} ]
-    Returns (rows, raw_sample_for_debug).
+    over_prob_novig / under_prob_novig are None when the book carries no
+    real odds (pick'em platforms) — those get scored against breakeven.
     """
     rows = []
     bms = data.get("bookmakers")
@@ -230,7 +256,6 @@ def parse_event_odds(data):
                 point = o.get("point")
                 side = (o.get("name") or "").lower()
                 price = o.get("price")
-                # capture any fair/no-vig field if present
                 fair = o.get("fair_price") or o.get("no_vig_price") or o.get("fair")
                 k = (player, point)
                 bykey.setdefault(k, {})[side] = {"price": price, "fair": fair}
@@ -239,7 +264,6 @@ def parse_event_odds(data):
                 under = sides.get("under", {})
                 po = american_to_prob(over.get("price"))
                 pu = american_to_prob(under.get("price"))
-                # Prefer explicit fair/no-vig if PropLine provides it
                 po_fair = american_to_prob(over.get("fair")) if over.get("fair") else None
                 pu_fair = american_to_prob(under.get("fair")) if under.get("fair") else None
                 if po_fair is None or pu_fair is None:
@@ -254,7 +278,7 @@ def parse_event_odds(data):
 
 
 # ============================================================
-# MLB HISTORY + MODEL (mirrors snapshot logic)
+# MLB HISTORY + MODEL (mirrors snapshot logic — UNCHANGED)
 # ============================================================
 
 _id_cache = {}
@@ -329,7 +353,6 @@ def model_prob_over(player, stat, line):
     n = len(vals)
     if n == 0:
         return None, 0
-    # distribution
     if n < 5:
         sims = np.random.poisson(max(np.mean(vals), 0.1), N_SIMULATIONS)
     elif n < 10:
@@ -354,18 +377,40 @@ def model_prob_over(player, stat, line):
 
 
 # ============================================================
+# BENCHMARK SELECTION
+# ============================================================
+
+def benchmark_for(book, side_novig):
+    """
+    Decide what real bar this leg is judged against.
+      - If the book gave a real no-vig implied prob -> use it (real_novig).
+      - Else if the book is a known pick'em platform -> use its breakeven.
+      - Else -> None (skip; unknown book with no odds).
+    Returns (benchmark_prob, benchmark_type) or (None, None).
+    """
+    if side_novig is not None:
+        return side_novig, "real_novig"
+    if book in PICKEM_BREAKEVEN:
+        return PICKEM_BREAKEVEN[book], "pickem_breakeven"
+    if book in SOFT_BOOKS:
+        return DEFAULT_PICKEM_BREAKEVEN, "pickem_breakeven"
+    return None, None
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
 def main():
-    print(f"=== PropLine Edge Test — {datetime.now(timezone.utc).isoformat()} ===")
+    print(f"=== PropLine Edge Test V2 — {datetime.now(timezone.utc).isoformat()} ===")
     events = pl_events()
     print(f"MLB events today/tomorrow: {len(events)}")
     if not events:
         print("No events. Exiting clean.")
         return
 
-    candidates = []
+    # De-dupe candidates by conflict key; keep the highest-edge row per key.
+    cand_by_key = {}
     debug_printed = False
     processed = 0
 
@@ -376,7 +421,6 @@ def main():
             continue
         rows, _ = parse_event_odds(odds)
 
-        # First-run safety: if we got bookmakers but parsed nothing, dump shape
         if not rows and odds.get("bookmakers") and not debug_printed:
             print("⚠️  Got bookmakers but parsed 0 rows. Raw shape of first book:")
             print(json.dumps(odds["bookmakers"][0], indent=2)[:2000])
@@ -385,7 +429,7 @@ def main():
 
         for row in rows:
             if row["book"] not in SOFT_BOOKS:
-                continue  # only score soft-book lines
+                continue
             if row["line"] is None or row["player"] is None:
                 continue
             raw_over, n = model_prob_over(row["player"], row["stat"], row["line"])
@@ -395,42 +439,50 @@ def main():
             cal_over = calibrate_prob(raw_over * 100) / 100.0
             cal_under = calibrate_prob((1 - raw_over) * 100) / 100.0
 
-            # Compare each side's calibrated prob to its no-vig implied
-            for side, cal_p, novig in [
+            for side, cal_p, side_novig in [
                 ("Over", cal_over, row["over_prob_novig"]),
                 ("Under", cal_under, row["under_prob_novig"]),
             ]:
-                if novig is None:
+                benchmark, btype = benchmark_for(row["book"], side_novig)
+                if benchmark is None:
                     continue
-                edge_pp = (cal_p - novig) * 100
-                if edge_pp >= EDGE_MARGIN:
-                    candidates.append({
-                        "test_date": date.today().isoformat(),
-                        "commence_time": ev.get("commence_time"),
-                        "home_team": ev.get("home_team"),
-                        "away_team": ev.get("away_team"),
-                        "book": row["book"],
-                        "player": row["player"],
-                        "stat": row["stat"],
-                        "line": float(row["line"]),
-                        "side": side,
-                        "model_prob_raw": round(raw_over * 100 if side == "Over"
-                                                else (1 - raw_over) * 100, 1),
-                        "model_prob_cal": round(cal_p * 100, 1),
-                        "novig_implied": round(novig * 100, 1),
-                        "edge_pp": round(edge_pp, 1),
-                        "sample_size": n,
-                        "outcome": None,
-                        "actual_value": None,
-                    })
+                edge_pp = (cal_p - benchmark) * 100
+                if edge_pp < EDGE_MARGIN:
+                    continue
+                key = (date.today().isoformat(), row["book"], row["player"],
+                       row["stat"], float(row["line"]), side)
+                cand = {
+                    "test_date": key[0],
+                    "commence_time": ev.get("commence_time"),
+                    "home_team": ev.get("home_team"),
+                    "away_team": ev.get("away_team"),
+                    "book": row["book"],
+                    "player": row["player"],
+                    "stat": row["stat"],
+                    "line": float(row["line"]),
+                    "side": side,
+                    "model_prob_raw": round(raw_over * 100 if side == "Over"
+                                            else (1 - raw_over) * 100, 1),
+                    "model_prob_cal": round(cal_p * 100, 1),
+                    "novig_implied": round(benchmark * 100, 1),
+                    "benchmark_type": btype,
+                    "edge_pp": round(edge_pp, 1),
+                    "sample_size": n,
+                    "outcome": None,
+                    "actual_value": None,
+                }
+                prev = cand_by_key.get(key)
+                if prev is None or cand["edge_pp"] > prev["edge_pp"]:
+                    cand_by_key[key] = cand
         time.sleep(0.15)
 
+    candidates = list(cand_by_key.values())
     print(f"Lines scored: {processed}")
-    print(f"Candidate edges (>= {EDGE_MARGIN}pp): {len(candidates)}")
+    print(f"Candidate edges (>= {EDGE_MARGIN}pp vs REAL benchmark): {len(candidates)}")
     if candidates:
-        # quick summary
         df = pd.DataFrame(candidates)
-        print(df.groupby(["stat", "side"]).size().to_string())
+        # show breakdown by book + benchmark type so fakes can't hide
+        print(df.groupby(["book", "benchmark_type", "stat", "side"]).size().to_string())
         written = sb_upsert("propline_edge_test", candidates,
                             on_conflict="test_date,book,player,stat,line,side")
         print(f"Written to Supabase: {written}")
