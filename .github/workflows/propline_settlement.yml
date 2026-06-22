@@ -1,0 +1,27 @@
+name: PropLine Settlement
+
+on:
+  workflow_dispatch:        # lets you run it manually from the Actions tab
+  schedule:
+    - cron: '0 13 * * *'    # also runs daily at 13:00 UTC (~9am ET) to settle prior-day games
+
+jobs:
+  settle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Run PropLine settlement
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python propline_settlement.py
